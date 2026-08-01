@@ -1,17 +1,33 @@
 [project]
 name = "vit"
 version = "0.1.0"
-description = "Add your description here"
+description = ""
 readme = "README.md"
-authors = [
-    { name = "stefan", email = "stefan.r.boca@gmail.com" }
-]
 requires-python = ">=3.14"
-dependencies = []
+authors = [{ name = "stefan", email = "stefan.r.boca@gmail.com" }]
+dependencies = [
+  "pillow>=12.3.0",
+  "torch>=2.13.0",
+  "torchvision>=0.28.0",
+]
 
-[project.scripts]
-vit = "vit:main"
+[dependency-groups]
+dev = [
+  "icecream>=2.2.0",
+  "ipykernel>=7.3.0",
+  "ipython>=9.16.0",
+  "pytest>=9.1.1",
+]
 
 [build-system]
 requires = ["uv_build>=0.12.0,<0.13.0"]
 build-backend = "uv_build"
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu130" }]
+torchvision = [{ index = "pytorch-cu130" }]
