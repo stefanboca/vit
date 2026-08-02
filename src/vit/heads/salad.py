@@ -42,17 +42,17 @@ def get_matching_probs(
     S: Tensor, dustbin_score: float | Tensor = 1.0, num_iters: int = 3, reg: float = 1.0
 ) -> Tensor:
     """sinkhorn"""
-    batch_size, m, n = S.size()
+    B, M, N = S.shape
     # augment scores matrix
-    S_aug = torch.empty(batch_size, m + 1, n, dtype=S.dtype, device=S.device)
-    S_aug[:, :m, :n] = S
-    S_aug[:, m, :] = dustbin_score
+    S_aug = torch.empty(B, M + 1, N, dtype=S.dtype, device=S.device)
+    S_aug[:, :M, :N] = S
+    S_aug[:, M, :] = dustbin_score
 
     # prepare normalized source and target log-weights
-    norm = -torch.tensor(math.log(n + m), device=S.device)
-    log_a, log_b = norm.expand(m + 1).contiguous(), norm.expand(n).contiguous()
-    log_a[-1] = log_a[-1] + math.log(n - m)
-    log_a, log_b = log_a.expand(batch_size, -1), log_b.expand(batch_size, -1)
+    norm = -torch.tensor(math.log(N + M), device=S.device)
+    log_a, log_b = norm.expand(M + 1).contiguous(), norm.expand(N).contiguous()
+    log_a[-1] = log_a[-1] + math.log(N - M)
+    log_a, log_b = log_a.expand(B, -1), log_b.expand(B, -1)
     log_P = log_otp_solver(log_a, log_b, S_aug, num_iters=num_iters, reg=reg)
     return log_P - norm
 
@@ -60,6 +60,7 @@ def get_matching_probs(
 class SALAD(nn.Module):
     """
     This class represents the Sinkhorn Algorithm for Locally Aggregated Descriptors (SALAD) model.
+    https://arxiv.org/abs/2311.15937
 
     Attributes:
         n_channels (int): The number of channels of the inputs (d).
@@ -76,38 +77,39 @@ class SALAD(nn.Module):
         n_clusters: int = 64,
         d_cluster: int = 128,
         d_token: int = 256,
+        hidden_features_token: int = 512,
+        hidden_features_cluster: int = 512,
+        hidden_features_score: int = 512,
         drop: float = 0.3,
         device: torch.device | None = None,
     ) -> None:
         super().__init__()
 
-        self.n_channels = n_channels
         self.n_clusters = n_clusters
         self.d_cluster = d_cluster
-        self.d_token = d_token
 
         # MLP for global scene token g
         self.token_features = nn.Sequential(
-            nn.Linear(self.n_channels, 512),
+            nn.Linear(n_channels, hidden_features_token),
             nn.ReLU(),
-            nn.Linear(512, self.d_token, device=device),
+            nn.Linear(hidden_features_token, d_token, device=device),
         )
         # MLP for local features f_i
         self.cluster_features = nn.Sequential(
-            nn.Conv2d(self.n_channels, 512, 1, device=device),
+            nn.Conv2d(n_channels, hidden_features_cluster, 1, device=device),
             nn.Dropout(drop),
             nn.ReLU(),
-            nn.Conv2d(512, self.d_cluster, 1, device=device),
+            nn.Conv2d(hidden_features_cluster, self.d_cluster, 1, device=device),
         )
         # MLP for score matrix S
         self.score = nn.Sequential(
-            nn.Conv2d(self.n_channels, 512, 1, device=device),
+            nn.Conv2d(n_channels, hidden_features_score, 1, device=device),
             nn.Dropout(drop),
             nn.ReLU(),
-            nn.Conv2d(512, self.n_clusters, 1, device=device),
+            nn.Conv2d(hidden_features_score, self.n_clusters, 1, device=device),
         )
         # Dustbin parameter z
-        self.dust_bin = nn.Parameter(torch.tensor(1.0, device=device))
+        self.dustbin = nn.Parameter(torch.tensor(1.0, device=device))
 
     def forward(self, input: DinoOutput) -> Tensor:
         """
@@ -122,7 +124,7 @@ class SALAD(nn.Module):
         t = self.token_features.forward(t)
 
         # Sinkhorn algorithm
-        p = get_matching_probs(p, self.dust_bin.data, 3)
+        p = get_matching_probs(p, self.dustbin.data, 3)
         p = torch.exp(p)
         # Normalize to maintain mass
         p = p[:, :-1, :]
