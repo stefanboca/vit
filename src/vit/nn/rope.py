@@ -51,6 +51,7 @@ class RoPE(nn.Module):
         n_heads: int,
         base: float = 100.0,
         normalize_coords: NormalizeCoords = "separate",
+        # TODO: training randomization params
         dtype: torch.dtype | None = None,
         device: torch.device | None = None,
     ):
