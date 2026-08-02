@@ -1,5 +1,6 @@
+import math
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 import torch
 from torch import Tensor, nn
@@ -51,13 +52,18 @@ class RoPE(nn.Module):
         n_heads: int,
         base: float = 100.0,
         normalize_coords: NormalizeCoords = "separate",
-        # TODO: training randomization params
+        shift_coords: float | None = None,
+        jitter_coords: float | None = None,
+        rescale_coords: float | None = None,
         dtype: torch.dtype | None = None,
         device: torch.device | None = None,
     ):
         super().__init__()
         assert d_model % (4 * n_heads) == 0
         self.normalize_coords = normalize_coords
+        self.shift_coords = shift_coords
+        self.jitter_coords = jitter_coords
+        self.rescale_coords = rescale_coords
         self.dtype = dtype
         self.device = device
 
@@ -74,8 +80,9 @@ class RoPE(nn.Module):
         )
 
     def forward(self, height: int, width: int) -> RoPECoeffs:
-        coords_h = torch.arange(0.5, height, dtype=self.dtype, device=self.device)
-        coords_w = torch.arange(0.5, width, dtype=self.dtype, device=self.device)
+        factory_kwargs: dict[str, Any] = {"device": self.device, "dtype": self.dtype}
+        coords_h = torch.arange(0.5, height, **factory_kwargs)
+        coords_w = torch.arange(0.5, width, **factory_kwargs)
         match self.normalize_coords:
             case "min":
                 min_hw = min(height, width)
@@ -91,6 +98,33 @@ class RoPE(nn.Module):
         coords = torch.stack(torch.meshgrid(coords_h, coords_w, indexing="ij"), dim=-1)
         coords = coords.flatten(0, 1)
         coords = 2.0 * coords - 1.0
+
+        # Shift coords by adding a uniform value in [-shift, shift]
+        if self.training and self.shift_coords is not None:
+            shift_hw = torch.empty(2, **factory_kwargs).uniform_(
+                -self.shift_coords, self.shift_coords
+            )
+            coords += shift_hw[None, :]
+
+        # Jitter coords by multiplying the range [-1, 1] by a log-uniform value in [1/jitter, jitter]
+        if self.training and self.jitter_coords is not None:
+            jitter_max = math.log(self.jitter_coords)
+            jitter_min = -jitter_max
+            jitter_hw = (
+                torch.empty(2, **factory_kwargs).uniform_(jitter_min, jitter_max).exp()
+            )
+            coords *= jitter_hw[None, :]
+
+        # Rescale coords by multiplying the range [-1, 1] by a log-uniform value in [1/rescale, rescale]
+        if self.training and self.rescale_coords is not None:
+            rescale_max = math.log(self.rescale_coords)
+            rescale_min = -rescale_max
+            rescale_hw = (
+                torch.empty(1, **factory_kwargs)
+                .uniform_(rescale_min, rescale_max)
+                .exp()
+            )
+            coords *= rescale_hw
 
         angles = (2 * torch.pi) * coords[:, :, None] / self.periods[None, None, :]  # ty:ignore[not-subscriptable]
         angles = angles.flatten(1, 2)
