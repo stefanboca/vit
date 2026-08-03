@@ -23,6 +23,16 @@ def rope_apply(x: Tensor, sin: Tensor, cos: Tensor) -> Tensor:
 
 
 @dataclass
+class RoPEParams:
+    base: float = 100.0
+    normalize_coords: NormalizeCoords = "separate"
+    shift_coords: float | None = None
+    jitter_coords: float | None = None
+    rescale_coords: float | None = 2
+    dtype: torch.dtype | None = torch.float32
+
+
+@dataclass
 class RoPECoeffs:
     sin: Tensor
     cos: Tensor
@@ -50,27 +60,22 @@ class RoPE(nn.Module):
         *,
         d_model: int,
         n_heads: int,
-        base: float = 100.0,
-        normalize_coords: NormalizeCoords = "separate",
-        shift_coords: float | None = None,
-        jitter_coords: float | None = None,
-        rescale_coords: float | None = None,
-        dtype: torch.dtype | None = None,
+        params: RoPEParams,
         device: torch.device | None = None,
     ):
         super().__init__()
         assert d_model % (4 * n_heads) == 0
-        self.normalize_coords = normalize_coords
-        self.shift_coords = shift_coords
-        self.jitter_coords = jitter_coords
-        self.rescale_coords = rescale_coords
-        self.dtype = dtype
+        self.normalize_coords = params.normalize_coords
+        self.shift_coords = params.shift_coords
+        self.jitter_coords = params.jitter_coords
+        self.rescale_coords = params.rescale_coords
+        self.dtype = params.dtype
         self.device = device
 
         d_head = d_model // n_heads
         self.register_buffer(
             "periods",
-            base
+            params.base
             ** (
                 2
                 * torch.arange(d_head // 4, dtype=self.dtype, device=self.device)

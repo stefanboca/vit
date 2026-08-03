@@ -25,5 +25,5 @@ class PatchEmbed(nn.Module):
             returns: [B, H, W, D]
         """
         x = self.proj.forward(input)  # [B, D, H, W]
-        x = x.permute([0, 2, 3, 1])  # [B, H, W, D]
+        x = x.permute(0, 2, 3, 1)  # [B, H, W, D]
         return x

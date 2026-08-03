@@ -1,15 +1,22 @@
 from dataclasses import dataclass
 from functools import partial
-from typing import Callable
+from typing import Any, Callable
 
 import torch
 from torch import Tensor, nn
 
 from ..nn.ffn import Mlp, SwiGluFfn
 from ..nn.patch_embed import PatchEmbed
-from ..nn.rope import NormalizeCoords, RoPE
+from ..nn.rope import RoPE, RoPEParams
 from ..nn.self_attn_block import SelfAttnBlock
 from ..types import Size
+
+
+@dataclass
+class PosInterplateParams:
+    size: int = 37
+    antialias: bool = False
+    offset: float | None = 0.1
 
 
 @dataclass
@@ -25,12 +32,7 @@ class Dino(nn.Module):
         *,
         in_chans: int = 3,
         patch_size: Size = 16,
-        rope_base: float = 100.0,
-        rope_normalize_coords: NormalizeCoords = "separate",
-        rope_shift_coords: float | None = None,
-        rope_jitter_coords: float | None = None,
-        rope_rescale_coords: float | None = 2,
-        rope_dtype: torch.dtype = torch.float32,
+        pos_embedding: RoPEParams | PosInterplateParams = RoPEParams(),
         d_model: int = 768,
         n_blocks: int = 12,
         n_heads: int = 12,
@@ -47,7 +49,9 @@ class Dino(nn.Module):
         untie_global_and_local_cls_norm: bool = False,
         device: torch.device | None = None,
     ):
+        # TODO: DINOv2 bag of channels
         super().__init__()
+        self.d_model = d_model
 
         self.patch_embed = PatchEmbed(
             in_chans=in_chans, patch_size=patch_size, d_model=d_model, device=device
@@ -58,17 +62,21 @@ class Dino(nn.Module):
             torch.empty(1, n_storage_tokens, d_model, device=device)
         )
 
-        self.rope_embed = RoPE(
-            d_model=d_model,
-            n_heads=n_heads,
-            base=rope_base,
-            normalize_coords=rope_normalize_coords,
-            shift_coords=rope_shift_coords,
-            jitter_coords=rope_jitter_coords,
-            rescale_coords=rope_rescale_coords,
-            dtype=rope_dtype,
-            device=device,
-        )
+        if isinstance(pos_embedding, RoPEParams):
+            self.rope_embed = RoPE(
+                d_model=d_model,
+                n_heads=n_heads,
+                params=pos_embedding,
+                device=device,
+            )
+            self.pos_interpolate_params = None
+            self.pos_embed = None
+        elif isinstance(pos_embedding, PosInterplateParams):
+            self.rope_embed = None
+            self.pos_interpolate_params = pos_embedding
+            self.pos_embed = nn.Parameter(
+                torch.empty(1, pos_embedding.size**2 + 1, d_model, device=device)
+            )
 
         self.blocks = nn.ModuleList(
             [
@@ -111,16 +119,23 @@ class Dino(nn.Module):
         else:
             cls_token += 0 * self.mask_token
 
+        x = torch.cat([cls_token.expand([B, -1, -1]), x], dim=1)
+
+        rope = None
+        if self.rope_embed is not None:
+            rope = self.rope_embed.forward(H, W)
+        elif self.pos_embed is not None:
+            x = x + self._interpolate_pos_encoding(H, W).to(x.dtype)
+
         x = torch.cat(
             [
-                cls_token.expand([B, -1, -1]),
+                x[:, :1],
                 self.storage_tokens.expand([B, -1, -1]),
-                x,
+                x[:, 1:],
             ],
             dim=1,
         )
 
-        rope = self.rope_embed.forward(H, W)
         for block in self.blocks:
             x = block.forward(x, rope)
         x: Tensor = self.norm.forward(x)
@@ -131,6 +146,128 @@ class Dino(nn.Module):
         patches = x[:, n_storage_tokens + 1 :].reshape([B, H, W, D])
 
         return DinoOutput(cls_token, storage_tokens, patches)
+
+    def _load_from_state_dict(
+        self,
+        state_dict: dict[str, Any],
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ) -> None:
+        storage_tokens = f"{prefix}storage_tokens"
+        register_tokens = f"{prefix}register_tokens"
+
+        if storage_tokens not in state_dict and register_tokens in state_dict:
+            # rename register_tokens to storage_tokens for dinov2
+            state_dict[storage_tokens] = state_dict.pop(register_tokens)
+
+        for key in list(state_dict.keys()):
+            # rewrite swiglu weights
+            if ".mlp.w12." in key:
+                w12 = state_dict.pop(key)
+                n = w12.shape[0] // 2
+                state_dict[key.replace("w12", "w1")] = w12[:n]
+                state_dict[key.replace("w12", "w2")] = w12[n:]
+
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
+
+    def _interpolate_pos_encoding(self, H: int, W: int) -> Tensor:
+        assert self.pos_embed is not None and self.pos_interpolate_params is not None
+        M = self.pos_interpolate_params.size
+        N = M**2
+        if N == H * W and H == W:
+            return self.pos_embed
+
+        pos_embed = self.pos_embed.float()
+        class_pos_embed = pos_embed[:, 0]
+        patch_pos_embed = pos_embed[:, 1:]
+
+        kwargs: dict[str, Any] = {}
+        if self.pos_interpolate_params.offset:
+            # Historical kludge: add a small number to avoid floating point error in the interpolation, see https://github.com/facebookresearch/dino/issues/8
+            # Note: still needed for backward-compatibility, the underlying operators are using both output size and scale factors
+            kwargs["scale_factor"] = (
+                float(H + self.pos_interpolate_params.offset) / M,
+                float(W + self.pos_interpolate_params.offset) / M,
+            )
+        else:
+            # Simply specify an output size instead of a scale factor
+            kwargs["size"] = (H, W)
+        patch_pos_embed = nn.functional.interpolate(
+            patch_pos_embed.reshape(1, M, M, self.d_model).permute(0, 3, 1, 2),
+            mode="bicubic",
+            antialias=self.pos_interpolate_params.antialias,
+            **kwargs,
+        )
+        assert (H, W) == patch_pos_embed.shape[-2:]
+        patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1).view(
+            1, H * W, self.d_model
+        )
+        return torch.cat((class_pos_embed.unsqueeze(0), patch_pos_embed), dim=1)
+
+
+def dinov2_vits14_reg(**kwargs):
+    return Dino(
+        patch_size=14,
+        pos_embedding=PosInterplateParams(antialias=True, offset=0.0),
+        d_model=384,
+        n_blocks=12,
+        n_heads=6,
+        norm=partial(nn.LayerNorm, eps=1e-6),
+        mask_k_bias=False,
+        **kwargs,
+    )
+
+
+def dinov2_vitb14_reg(**kwargs):
+    return Dino(
+        patch_size=14,
+        pos_embedding=PosInterplateParams(antialias=True, offset=0.0),
+        d_model=768,
+        n_blocks=12,
+        n_heads=12,
+        norm=partial(nn.LayerNorm, eps=1e-6),
+        mask_k_bias=False,
+        **kwargs,
+    )
+
+
+def dinov2_vitl14_reg(**kwargs):
+    return Dino(
+        patch_size=14,
+        pos_embedding=PosInterplateParams(antialias=True, offset=0.0),
+        d_model=1024,
+        n_blocks=24,
+        n_heads=16,
+        norm=partial(nn.LayerNorm, eps=1e-6),
+        mask_k_bias=False,
+        **kwargs,
+    )
+
+
+def dinov2_vitg14_reg(**kwargs):
+    return Dino(
+        patch_size=14,
+        pos_embedding=PosInterplateParams(antialias=True, offset=0.0),
+        d_model=1536,
+        n_blocks=40,
+        n_heads=24,
+        ffn=SwiGluFfn,
+        norm=partial(nn.LayerNorm, eps=1e-6),
+        mask_k_bias=False,
+        **kwargs,
+    )
 
 
 def dinov3_vits16(**kwargs):

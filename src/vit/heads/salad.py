@@ -117,7 +117,7 @@ class SALAD(nn.Module):
             f (torch.Tensor): The global descriptor [B, m*l + g]
         """
         x, t = input.patches, input.cls_token
-        x = x.permute([0, 3, 1, 2])  # [B, C, H, W]
+        x = x.permute(0, 3, 1, 2)  # [B, C, H, W]
 
         f = self.cluster_features.forward(x).flatten(2)
         p = self.score.forward(x).flatten(2)
