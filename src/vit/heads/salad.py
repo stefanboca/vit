@@ -3,8 +3,6 @@ import math
 import torch
 from torch import Tensor, nn
 
-from ..backbones.dino import DinoOutput
-
 
 # Code adapted from OpenGlue, MIT license
 # https://github.com/ucuapps/OpenGlue/blob/main/models/superglue/optimal_transport.py
@@ -111,12 +109,12 @@ class SALAD(nn.Module):
         # Dustbin parameter z
         self.dustbin = nn.Parameter(torch.tensor(1.0, device=device))
 
-    def forward(self, input: DinoOutput) -> Tensor:
+    def forward(self, cls_token: Tensor, patch_tokens: Tensor) -> Tensor:
         """
         Returns:
             f (torch.Tensor): The global descriptor [B, m*l + g]
         """
-        x, t = input.patches, input.cls_token
+        t, x = cls_token, patch_tokens
         x = x.permute(0, 3, 1, 2)  # [B, C, H, W]
 
         f = self.cluster_features.forward(x).flatten(2)
