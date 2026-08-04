@@ -4,6 +4,7 @@
   outputs = {nixpkgs, ...}: let
     inherit (nixpkgs) lib;
     inherit (lib.attrsets) genAttrs;
+    inherit (lib.strings) makeLibraryPath;
 
     systems = ["x86_64-linux" "aarch64-linux"];
     forAllSystems = genAttrs systems;
@@ -19,9 +20,13 @@
     devShells = forAllSystems (system: let
       pkgs = nixpkgsFor.${system};
     in {
-      default = pkgs.mkShellNoCC {
-        buildInputs = [pkgs.cudaPackages_13.cudatoolkit];
+      default = pkgs.mkShellNoCC rec {
+        buildInputs = with pkgs; [
+          cudaPackages_13.cudatoolkit
+          libx11
+        ];
         env = {
+          LD_LIBRARY_PATH = makeLibraryPath buildInputs;
           NIX_LD_LIBRARY_PATH = "/run/opengl-driver/lib:/run/current-system/sw/share/nix-ld/lib";
         };
       };

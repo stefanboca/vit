@@ -9,8 +9,10 @@ dependencies = [
   "depth-anything-3",
   "dinov2",
   "dinov3",
+  "lightning>=2.6.5",
   "pillow>=12.3.0",
   "torch>=2.13.0",
+  "torchmetrics>=1.9.0",
   "torchvision>=0.28.0",
 ]
 
@@ -19,6 +21,7 @@ dev = [
   "icecream>=2.2.0",
   "ipykernel>=7.3.0",
   "ipython>=9.16.0",
+  "tensorboard>=2.21.0",
 ]
 
 [build-system]
@@ -29,6 +32,7 @@ build-backend = "uv_build"
 override-dependencies = [
   # for dinov2
   "torch>=2.13.0",
+  "torchmetrics>=1.9.0",
   "torchvision>=0.28.0",
   "xformers>=0.0.35"
 ]

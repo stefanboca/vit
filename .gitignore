@@ -1,3 +1,6 @@
+/checkpoints
+/lightning_logs
+
 # nix
 /result
 /result-*
