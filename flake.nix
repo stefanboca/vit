@@ -28,7 +28,7 @@
         env = {
           LD_LIBRARY_PATH = makeLibraryPath buildInputs;
           NIX_LD_LIBRARY_PATH = "/run/opengl-driver/lib:/run/current-system/sw/share/nix-ld/lib";
-          TORCHINDUCTOR_DISABLE_LDCONFIG = 1;
+          TRITON_LIBCUDA_PATH = "/run/opengl-driver/lib";
         };
       };
     });

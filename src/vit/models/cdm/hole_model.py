@@ -1,17 +1,22 @@
 from pathlib import Path
+from typing import Literal
 
 import lightning as L
 import torch
+import torch.nn.functional as F
 import torchmetrics
 from dinov3.hub.backbones import dinov3_vitl16
 from dinov3.models.vision_transformer import DinoVisionTransformer
 from icecream import ic
 from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.loggers import TensorBoardLogger
 from lightning.pytorch.plugins import MixedPrecision
+from segmentation_models_pytorch.losses import DiceLoss
 from torch import Tensor, nn
 from torch.utils.data import DataLoader, random_split
 from torchmetrics.segmentation import MeanIoU
 from torchvision.transforms import v2
+from torchvision.utils import make_grid
 
 from vit.data.byte_camera_depth import BCDSample, ByteCameraDepth
 
@@ -31,12 +36,14 @@ class HoleModel(L.LightningModule):
         )
         self.seg_head = DPTSegHead(device=self.device, n_classes=1)
 
-        self.loss_fn = nn.BCEWithLogitsLoss()
+        self.bce_loss = nn.BCEWithLogitsLoss()
+        self.dice_loss = DiceLoss("binary")
 
         self.train_acc = torchmetrics.Accuracy(task="binary")
         self.val_acc = torchmetrics.Accuracy(task="binary")
         self.val_miou = MeanIoU(num_classes=2)
 
+    @torch.compile
     def forward(self, input: Tensor) -> Tensor:
         B, _, H, W = input.shape
         H //= self.backbone.patch_size
@@ -51,17 +58,21 @@ class HoleModel(L.LightningModule):
         x = self.seg_head.forward(x)
         return x
 
+    @torch.compile
+    def loss(self, preds: Tensor, target: Tensor) -> Tensor:
+        target = target.to(torch.float32)
+        return self.bce_loss.forward(preds, target) + self.dice_loss.forward(
+            preds, target
+        )
+
     def training_step(self, batch: BCDSample, batch_idx):
         x, y = batch["color"], batch["hole_mask"]
         logits = self.forward(x)
 
-        loss = self.loss_fn(logits, y.to(torch.float32))
+        loss = self.loss(logits, y)
         self.train_acc(logits, y)
 
-        self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
-        self.log(
-            "train_acc", self.train_acc, on_step=False, on_epoch=True, prog_bar=True
-        )
+        self.log_metrics(batch, logits, loss, batch_idx, "train")
 
         return loss
 
@@ -69,13 +80,38 @@ class HoleModel(L.LightningModule):
         x, y = batch["color"], batch["hole_mask"]
         logits = self.forward(x)
 
-        loss = self.loss_fn(logits, y.to(torch.float32))
+        loss = self.loss(logits, y)
         self.val_acc(logits, y)
         self.val_miou(logits, y)
 
-        self.log("val_loss", loss, prog_bar=True)
-        self.log("val_acc", self.val_acc, prog_bar=True)
-        self.log("val_mIoU", self.val_miou, prog_bar=True)
+        self.log_metrics(batch, logits, loss, batch_idx, "val")
+
+    def log_metrics(
+        self, batch, logits, loss, batch_idx, kind: Literal["train", "val"]
+    ):
+        self.log(f"{kind}/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log(
+            f"{kind}/acc",
+            self.train_acc if kind == "val" else self.val_acc,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+        )
+
+        if self.logger is not None and batch_idx % 50 == 0:
+            B = logits.shape[0]
+            N = min(B, 4)
+            color_imgs = batch["color"][:N]
+            gts = batch["hole_mask"][:N].expand_as(color_imgs)
+            preds = F.sigmoid(logits[:N]).expand_as(color_imgs)
+            imgs = torch.cat([color_imgs, gts, preds], dim=3)
+            grid = make_grid(imgs, nrow=1, padding=0)
+            self.logger.experiment.add_image(f"{kind}/images", grid, batch_idx)
+
+        if kind == "val":
+            self.log(
+                "val/mIoU", self.val_miou, on_step=True, on_epoch=True, prog_bar=True
+            )
 
     def configure_optimizers(self):
         return torch.optim.AdamW(self.parameters(), self.lr)
@@ -87,7 +123,7 @@ def main():
     transform = v2.Compose(
         [
             v2.Resize(
-                (512, 320),
+                (320, 512),
                 antialias=True,
             ),
             v2.Normalize(
@@ -108,7 +144,6 @@ def main():
     train_ds, val_ds = random_split(
         dataset, [0.9, 0.1], generator=torch.Generator().manual_seed(42)
     )
-
     train_loader = DataLoader(
         train_ds, batch_size=24, num_workers=16, pin_memory=True, shuffle=True
     )
@@ -125,23 +160,27 @@ def main():
     )
     model.backbone.requires_grad_(False)
     model.backbone.eval()
-    model = torch.compile(model)
-
-    ic(model)
 
     checkpoint = ModelCheckpoint(
         dirpath="checkpoints/cdm/hole",
-        filename="{epoch}-{val_loss:.3f}",
-        monitor="val_loss",
+        filename="epoch={epoch}-val_loss={val/loss:.3f}",
+        monitor="val/loss",
         mode="min",
         save_top_k=1,
         save_last="link",
+        auto_insert_metric_name=False,
         save_on_exception=True,
     )
     amp = MixedPrecision(precision="bf16-mixed", device="cuda")
-    trainer = L.Trainer(max_epochs=200, callbacks=[checkpoint], plugins=[amp])
+    logger = TensorBoardLogger("lightning_logs", name="cdm/hole_model")
+    trainer = L.Trainer(
+        max_epochs=10,
+        logger=logger,
+        callbacks=[checkpoint],
+        plugins=[amp],
+    )
     trainer.fit(
-        model,  # ty: ignore[invalid-argument-type]
+        model,
         train_dataloaders=train_loader,
         val_dataloaders=val_loader,
         # ckpt_path="last",
