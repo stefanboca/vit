@@ -3,10 +3,11 @@ from pathlib import Path
 import lightning as L
 import torch
 import torchmetrics
-from dinov3.hub.backbones import dinov3_vitl16plus
+from dinov3.hub.backbones import dinov3_vitl16
 from dinov3.models.vision_transformer import DinoVisionTransformer
 from icecream import ic
 from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.plugins import MixedPrecision
 from torch import Tensor, nn
 from torch.utils.data import DataLoader, random_split
 from torchmetrics.segmentation import MeanIoU
@@ -22,27 +23,28 @@ class HoleModel(L.LightningModule):
         super().__init__()
         self.lr = lr
 
-        self.backbone: DinoVisionTransformer = dinov3_vitl16plus(
+        self.backbone: DinoVisionTransformer = dinov3_vitl16(
             pretrained=False, device=self.device
         )
         self.dpt = DPT(
             d_model=self.backbone.embed_dim, batch_norm=True, device=self.device
         )
-        self.seg_head = DPTSegHead(device=self.device)
+        self.seg_head = DPTSegHead(device=self.device, n_classes=1)
 
-        self.loss_fn = nn.CrossEntropyLoss()
+        self.loss_fn = nn.BCEWithLogitsLoss()
 
-        self.train_acc = torchmetrics.Accuracy(task="multiclass", num_classes=2)
-        self.val_acc = torchmetrics.Accuracy(task="multiclass", num_classes=2)
-        self.val_miou = MeanIoU(input_format="mixed")
+        self.train_acc = torchmetrics.Accuracy(task="binary")
+        self.val_acc = torchmetrics.Accuracy(task="binary")
+        self.val_miou = MeanIoU(num_classes=2)
 
     def forward(self, input: Tensor) -> Tensor:
         B, _, H, W = input.shape
         H //= self.backbone.patch_size
         W //= self.backbone.patch_size
-        x = self.backbone.get_intermediate_layers(
-            input, n=[5, 11, 17, 23], return_class_token=True
-        )
+        with torch.no_grad():  # TODO: only if frozen
+            x = self.backbone.get_intermediate_layers(
+                input, n=[5, 11, 17, 23], return_class_token=True
+            )
         patch_tokens, cls_tokens = zip(*x)
         patch_tokens = [p.reshape(B, H, W, -1) for p in patch_tokens]
         x = self.dpt.forward(cls_tokens, patch_tokens)  # ty: ignore[invalid-argument-type]
@@ -53,12 +55,12 @@ class HoleModel(L.LightningModule):
         x, y = batch["color"], batch["hole_mask"]
         logits = self.forward(x)
 
-        loss = self.loss_fn(logits, y)
+        loss = self.loss_fn(logits, y.to(torch.float32))
         self.train_acc(logits, y)
 
-        self.log("train/loss", loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log(
-            "train/acc", self.train_acc, on_step=False, on_epoch=True, prog_bar=True
+            "train_acc", self.train_acc, on_step=False, on_epoch=True, prog_bar=True
         )
 
         return loss
@@ -67,13 +69,13 @@ class HoleModel(L.LightningModule):
         x, y = batch["color"], batch["hole_mask"]
         logits = self.forward(x)
 
-        loss = self.loss_fn(logits, y)
+        loss = self.loss_fn(logits, y.to(torch.float32))
         self.val_acc(logits, y)
         self.val_miou(logits, y)
 
-        self.log("val/loss", loss, prog_bar=True)
-        self.log("val/acc", self.val_acc, prog_bar=True)
-        self.log("val/mIoU", self.val_miou, prog_bar=True)
+        self.log("val_loss", loss, prog_bar=True)
+        self.log("val_acc", self.val_acc, prog_bar=True)
+        self.log("val_mIoU", self.val_miou, prog_bar=True)
 
     def configure_optimizers(self):
         return torch.optim.AdamW(self.parameters(), self.lr)
@@ -85,7 +87,6 @@ def main():
     transform = v2.Compose(
         [
             v2.Resize(
-                # (640, 400),
                 (512, 320),
                 antialias=True,
             ),
@@ -108,24 +109,43 @@ def main():
         dataset, [0.9, 0.1], generator=torch.Generator().manual_seed(42)
     )
 
-    train_loader = DataLoader(train_ds, batch_size=8, num_workers=8, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=8, num_workers=8)
-
-    checkpoint = ModelCheckpoint(
-        dirpath="checkpoionts/cdm/hole",
-        filename="{epoch}-{val/loss:.3f}",
-        monitor="val/loss",
-        mode="min",
-        save_top_k=1,
-        save_last=True,
-        every_n_epochs=5,
+    train_loader = DataLoader(
+        train_ds, batch_size=24, num_workers=16, pin_memory=True, shuffle=True
     )
-    trainer = L.Trainer(max_epochs=200, callbacks=[checkpoint])
+    val_loader = DataLoader(val_ds, batch_size=24, num_workers=16, pin_memory=True)
 
     model = HoleModel()
+    model.backbone.load_state_dict(
+        torch.load(
+            "/home/stefan/src/models/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
+            map_location=model.device,
+            mmap=True,
+            weights_only=True,
+        )
+    )
     model.backbone.requires_grad_(False)
+    model.backbone.eval()
+    model = torch.compile(model)
+
     ic(model)
-    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+
+    checkpoint = ModelCheckpoint(
+        dirpath="checkpoints/cdm/hole",
+        filename="{epoch}-{val_loss:.3f}",
+        monitor="val_loss",
+        mode="min",
+        save_top_k=1,
+        save_last="link",
+        save_on_exception=True,
+    )
+    amp = MixedPrecision(precision="bf16-mixed", device="cuda")
+    trainer = L.Trainer(max_epochs=200, callbacks=[checkpoint], plugins=[amp])
+    trainer.fit(
+        model,  # ty: ignore[invalid-argument-type]
+        train_dataloaders=train_loader,
+        val_dataloaders=val_loader,
+        # ckpt_path="last",
+    )
 
 
 if __name__ == "__main__":

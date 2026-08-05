@@ -61,7 +61,7 @@ class ByteCameraDepth(Dataset):
         sample: BCDSample = {"color": tv_tensors.Image(color)}
 
         if self.depth or self.hole_mask:
-            depth = decode_image(str(frame.depth)).squeeze(0)
+            depth = decode_image(str(frame.depth))
             if self.depth:
                 sample["depth"] = tv_tensors.Mask(depth)
             if self.hole_mask:

@@ -80,7 +80,7 @@ class DPTSegHead(nn.Module):
             ),
             nn.BatchNorm2d(in_channels, device=device),
             nn.ReLU(inplace=True),
-            nn.Dropout(drop),
+            nn.Dropout2d(drop),
             nn.Conv2d(in_channels, n_classes, kernel_size=1, device=device),
         )
 

@@ -20,7 +20,7 @@
     devShells = forAllSystems (system: let
       pkgs = nixpkgsFor.${system};
     in {
-      default = pkgs.mkShellNoCC rec {
+      default = pkgs.mkShell rec {
         buildInputs = with pkgs; [
           cudaPackages_13.cudatoolkit
           libx11
@@ -28,6 +28,7 @@
         env = {
           LD_LIBRARY_PATH = makeLibraryPath buildInputs;
           NIX_LD_LIBRARY_PATH = "/run/opengl-driver/lib:/run/current-system/sw/share/nix-ld/lib";
+          TORCHINDUCTOR_DISABLE_LDCONFIG = 1;
         };
       };
     });
