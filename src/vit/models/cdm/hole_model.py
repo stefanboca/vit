@@ -68,10 +68,9 @@ class HoleModel(L.LightningModule):
     def training_step(self, batch: BCDSample, batch_idx):
         x, y = batch["color"], batch["hole_mask"]
         logits = self.forward(x)
-
         loss = self.loss(logits, y)
-        self.train_acc(logits, y)
 
+        self.train_acc(logits, y)
         self.log_metrics(batch, logits, loss, batch_idx, "train")
 
         return loss
@@ -79,11 +78,10 @@ class HoleModel(L.LightningModule):
     def validation_step(self, batch: BCDSample, batch_idx):
         x, y = batch["color"], batch["hole_mask"]
         logits = self.forward(x)
-
         loss = self.loss(logits, y)
+
         self.val_acc(logits, y)
         self.val_miou(logits, y)
-
         self.log_metrics(batch, logits, loss, batch_idx, "val")
 
     def log_metrics(
@@ -173,7 +171,7 @@ def main():
     amp = MixedPrecision(precision="bf16-mixed", device="cuda")
     logger = TensorBoardLogger("lightning_logs", name="cdm/hole_model")
     trainer = L.Trainer(
-        max_epochs=40,
+        max_epochs=80,
         logger=logger,
         callbacks=[checkpoint],
         plugins=[amp],

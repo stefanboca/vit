@@ -9,7 +9,8 @@ dependencies = [
   "depth-anything-3",
   "dinov2",
   "dinov3",
-  "lightning>=2.6.5",
+  "lightning[pytorch-extra]>=2.6.5",
+  "moge",
   "pillow>=12.3.0",
   "segmentation-models-pytorch>=0.5.0",
   "torch>=2.13.0",
@@ -47,6 +48,7 @@ explicit = true
 depth-anything-3 = { git = "https://github.com/ByteDance-Seed/Depth-Anything-3.git", rev = "3d835ec1a5802d64a8b8b15f817a1ab54809bfe4" }
 dinov2 = { git = "https://github.com/facebookresearch/dinov2.git", rev = "7764ea0f912e53c92e82eb78a2a1631e92725fc8" }
 dinov3 = { git = "https://github.com/facebookresearch/dinov3.git", rev = "6876159a11b4df116f30f667f8c9888617df0751" }
+moge = { git = "https://github.com/microsoft/MoGe.git", rev = "925b8ed835a7a9cdb7578ba15c658a0afc969030" }
 torch = [{ index = "pytorch-cu130" }]
 torchvision = [{ index = "pytorch-cu130" }]
 xformers = [{ index = "pytorch-cu130" }]
