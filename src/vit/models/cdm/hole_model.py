@@ -93,8 +93,6 @@ class HoleModel(L.LightningModule):
         self.log(
             f"{kind}/acc",
             self.train_acc if kind == "val" else self.val_acc,
-            on_step=True,
-            on_epoch=True,
             prog_bar=True,
         )
 
@@ -104,9 +102,10 @@ class HoleModel(L.LightningModule):
             color_imgs = batch["color"][:N]
             gts = batch["hole_mask"][:N].expand_as(color_imgs)
             preds = F.sigmoid(logits[:N]).expand_as(color_imgs)
-            imgs = torch.cat([color_imgs, gts, preds], dim=3)
+            preds_bin = (preds > 0.5).to(torch.float32)
+            imgs = torch.cat([color_imgs, gts, preds_bin, preds], dim=3)
             grid = make_grid(imgs, nrow=1, padding=0)
-            self.logger.experiment.add_image(f"{kind}/images", grid, batch_idx)
+            self.logger.experiment.add_image(f"{kind}/images", grid, 0)
 
         if kind == "val":
             self.log(
@@ -174,7 +173,7 @@ def main():
     amp = MixedPrecision(precision="bf16-mixed", device="cuda")
     logger = TensorBoardLogger("lightning_logs", name="cdm/hole_model")
     trainer = L.Trainer(
-        max_epochs=10,
+        max_epochs=40,
         logger=logger,
         callbacks=[checkpoint],
         plugins=[amp],
@@ -183,7 +182,7 @@ def main():
         model,
         train_dataloaders=train_loader,
         val_dataloaders=val_loader,
-        # ckpt_path="last",
+        ckpt_path="last",
     )
 
 
