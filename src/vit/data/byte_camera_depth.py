@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NotRequired, TypedDict
@@ -9,15 +10,17 @@ from torchvision import tv_tensors
 from torchvision.io import decode_image
 from torchvision.transforms import v2
 
+PNG_REGEX = re.compile(r"(color|depth)_(\d{1,4}).png")
+
 
 @dataclass
 class FrameInfo:
-    color: Path
+    image: Path
     depth: Path
 
 
 class BCDSample(TypedDict):
-    color: Tensor
+    images: Tensor
     depth: NotRequired[Tensor]
     hole_mask: NotRequired[Tensor]
 
@@ -26,7 +29,8 @@ class ByteCameraDepth(Dataset):
     def __init__(
         self,
         data_dir: Path,
-        cameras: str | list[str],
+        scenes: list[str] | None = None,
+        cameras: list[str] | None = None,
         depth: bool = True,
         hole_mask: bool = False,
         transform=None,
@@ -36,19 +40,44 @@ class ByteCameraDepth(Dataset):
         self.hole_mask = hole_mask
         self.transform = transform
 
-        if isinstance(cameras, str):
-            cameras = [cameras]
+        scene_dirs = (
+            [data_dir / scene for scene in scenes]
+            if scenes is not None
+            else sorted(data_dir.iterdir())
+        )
+
+        if cameras is not None:
+            cameras = [f"camera_{camera}" for camera in cameras]
 
         self.frames: list[FrameInfo] = []
-        for session_dir in sorted(data_dir.iterdir()):
-            for camera in cameras:
-                camera_dir = session_dir / f"camera_{camera}"
+        for scene_dir in scene_dirs:
+            if not scene_dir.exists():
+                print(f"warning: scene {scene_dir} does not exist")
+                continue
+
+            camera_dirs = (
+                [scene_dir / camera for camera in cameras]
+                if cameras is not None
+                else sorted(scene_dir.iterdir())
+            )
+
+            for camera_dir in camera_dirs:
                 if not camera_dir.exists():
+                    print(f"warning: camera dir {camera_dir} does not exist")
                     continue
-                color_imgs = sorted(camera_dir.glob("color_*.png"))
-                depth_imgs = sorted(camera_dir.glob("depth_*.png"))
+                images = {}
+                depths = {}
+                for png in camera_dir.glob("*.png"):
+                    if (match := PNG_REGEX.fullmatch(png.name)) is not None:
+                        ty = match.group(1)
+                        idx = int(match.group(2))
+                        if ty == "color":
+                            images[idx] = png
+                        elif ty == "depth":
+                            depths[idx] = png
                 self.frames.extend(
-                    FrameInfo(f[0], f[1]) for f in zip(color_imgs, depth_imgs)
+                    FrameInfo(images[idx], depths[idx])
+                    for idx in sorted(set(images.keys()).intersection(depths.keys()))
                 )
 
     def __len__(self):
@@ -57,8 +86,8 @@ class ByteCameraDepth(Dataset):
     def __getitem__(self, index: int) -> BCDSample:
         frame = self.frames[index]
 
-        color = v2.functional.to_dtype(decode_image(str(frame.color)), scale=True)
-        sample: BCDSample = {"color": tv_tensors.Image(color)}
+        image = v2.functional.to_dtype(decode_image(str(frame.image)), scale=True)
+        sample: BCDSample = {"images": tv_tensors.Image(image)}
 
         if self.depth or self.hole_mask:
             depth = decode_image(str(frame.depth))

@@ -21,6 +21,7 @@
       pkgs = nixpkgsFor.${system};
     in {
       default = pkgs.mkShell rec {
+        packages = with pkgs; [uv];
         buildInputs = with pkgs; [
           cudaPackages_13.cudatoolkit
           libx11
