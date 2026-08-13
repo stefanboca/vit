@@ -27,11 +27,11 @@ class ByteCameraDepthDataModule(LightningDataModule):
         self.resize = v2.Resize((320, 512), antialias=True)
         self.augment = v2.Compose(
             [
-                v2.RandomChoice(
-                    [
-                        self.resize,
-                        v2.RandomCrop((320, 512), pad_if_needed=True),
-                    ],
+                v2.RandomResizedCrop(
+                    size=(320, 512),
+                    scale=(0.3, 1),
+                    ratio=(1.6, 1.6),
+                    antialias=True,
                 ),
                 v2.RandomHorizontalFlip(),
             ]
