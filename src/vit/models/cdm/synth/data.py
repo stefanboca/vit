@@ -2,7 +2,6 @@ from pathlib import Path
 from typing import override
 
 from lightning import LightningDataModule
-from torch.utils.data import DataLoader
 from torchdata.stateful_dataloader import StatefulDataLoader
 from torchvision.transforms import v2
 
