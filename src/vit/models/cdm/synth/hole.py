@@ -152,6 +152,7 @@ class HoleModel(LightningModule):
             interval = self.trainer.log_every_n_steps  # ty: ignore[unresolved-attribute]
             if (
                 self.trainer.is_global_zero
+                and not self.trainer.sanity_checking
                 and isinstance(self.logger, TensorBoardLogger)
                 and (
                     (
