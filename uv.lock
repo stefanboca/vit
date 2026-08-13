@@ -20,7 +20,10 @@ resolution-markers = [
 ]
 
 [manifest]
-overrides = [{ name = "open3d", marker = "platform_machine != 'aarch64' or sys_platform != 'linux'", specifier = "==0.19.0" }]
+overrides = [
+    { name = "open3d", marker = "platform_machine != 'aarch64' or sys_platform != 'linux'" },
+    { name = "pycolmap", marker = "platform_machine != 'aarch64' or sys_platform != 'linux'" },
+]
 
 [[package]]
 name = "absl-py"
@@ -921,7 +924,7 @@ dependencies = [
     { name = "pillow-heif" },
     { name = "plyfile" },
     { name = "pre-commit" },
-    { name = "pycolmap" },
+    { name = "pycolmap", marker = "platform_machine != 'aarch64' or sys_platform != 'linux'" },
     { name = "requests" },
     { name = "safetensors" },
     { name = "torch" },
