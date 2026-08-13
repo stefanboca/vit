@@ -19,6 +19,9 @@ resolution-markers = [
     "(python_full_version < '3.13' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.13' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
 ]
 
+[manifest]
+overrides = [{ name = "open3d", marker = "platform_machine != 'aarch64' or sys_platform != 'linux'", specifier = "==0.19.0" }]
+
 [[package]]
 name = "absl-py"
 version = "2.5.0"
@@ -912,7 +915,7 @@ dependencies = [
     { name = "moviepy" },
     { name = "numpy" },
     { name = "omegaconf" },
-    { name = "open3d" },
+    { name = "open3d", marker = "platform_machine != 'aarch64' or sys_platform != 'linux'" },
     { name = "opencv-python" },
     { name = "pillow" },
     { name = "pillow-heif" },
