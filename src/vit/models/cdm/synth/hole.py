@@ -57,7 +57,8 @@ class HoleModel(LightningModule):
             }
         )
 
-        self._register_load_state_dict_pre_hook(self._remove_backbone_keys)
+        self.register_load_state_dict_pre_hook(self._capture_load_prefix)
+        self.register_load_state_dict_post_hook(self._remove_backbone_keys)
         self._register_state_dict_hook(self._remove_backbone)
         self._last_visualized_step = -1
 
@@ -206,8 +207,9 @@ class HoleModel(LightningModule):
 
         return loss
 
-    def _remove_backbone_keys(
+    def _capture_load_prefix(
         self,
+        module,
         state_dict,
         prefix,
         local_metadata,
@@ -216,8 +218,15 @@ class HoleModel(LightningModule):
         unexpected_keys,
         error_msgs,
     ):
-        backbone_prefix = f"{prefix}backbone."
-        missing_keys[:] = [k for k in missing_keys if not k.startswith(backbone_prefix)]
+        self._load_state_dict_prefix = prefix
+
+    def _remove_backbone_keys(self, module, incompatible_keys):
+        backbone_prefix = f"{self._load_state_dict_prefix}backbone."
+        incompatible_keys.missing_keys[:] = [
+            key
+            for key in incompatible_keys.missing_keys
+            if not key.startswith(backbone_prefix)
+        ]
 
     def _remove_backbone(self, module, state_dict, prefix, local_metadata):
         backbone_prefix = f"{prefix}backbone."

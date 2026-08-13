@@ -12,6 +12,7 @@ trainer:
       init_args:
         filename: epoch={epoch}-val_loss_epoch={val/loss_epoch:.3f}
         monitor: val/loss_epoch
+        save_last: true
         auto_insert_metric_name: false
         save_on_exception: true
 model:
