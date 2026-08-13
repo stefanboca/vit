@@ -31,7 +31,8 @@ build-backend = "uv_build"
 
 [tool.uv]
 override-dependencies = [
-  "open3d==0.19.0 ; sys_platform != 'linux' or platform_machine != 'aarch64'",
+  "open3d ; sys_platform != 'linux' or platform_machine != 'aarch64'",
+  "pycolmap ; sys_platform != 'linux' or platform_machine != 'aarch64'",
 ]
 
 [[tool.uv.index]]
