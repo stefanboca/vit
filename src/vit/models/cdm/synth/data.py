@@ -3,6 +3,7 @@ from typing import override
 
 from lightning import LightningDataModule
 from torch.utils.data import DataLoader
+from torchdata.stateful_dataloader import StatefulDataLoader
 from torchvision.transforms import v2
 
 from vit.data import ByteCameraDepth
@@ -84,8 +85,8 @@ class ByteCameraDepthDataModule(LightningDataModule):
             )
 
     @override
-    def train_dataloader(self) -> DataLoader:
-        return DataLoader(
+    def train_dataloader(self) -> StatefulDataLoader:
+        return StatefulDataLoader(
             self.train,
             batch_size=self.batch_size,
             num_workers=self.num_workers,
@@ -93,13 +94,13 @@ class ByteCameraDepthDataModule(LightningDataModule):
         )
 
     @override
-    def val_dataloader(self) -> DataLoader:
-        return DataLoader(
+    def val_dataloader(self) -> StatefulDataLoader:
+        return StatefulDataLoader(
             self.val, batch_size=self.batch_size, num_workers=self.num_workers
         )
 
     @override
-    def test_dataloader(self) -> DataLoader:
-        return DataLoader(
+    def test_dataloader(self) -> StatefulDataLoader:
+        return StatefulDataLoader(
             self.test, batch_size=self.batch_size, num_workers=self.num_workers
         )
