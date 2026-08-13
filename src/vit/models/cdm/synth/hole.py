@@ -145,7 +145,6 @@ class HoleModel(LightningModule):
                     metric,
                     on_step=True,
                     on_epoch=True,
-                    prog_bar=True,
                     batch_size=batch_size,
                 )
 
