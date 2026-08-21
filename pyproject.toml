@@ -37,13 +37,12 @@ override-dependencies = [
 ]
 
 [[tool.uv.index]]
-name = "pytorch-cu130"
-url = "https://download.pytorch.org/whl/cu130"
+name = "pytorch-cuda"
+url = "https://download.pytorch.org/whl/cu132"
 explicit = true
 
 [tool.uv.sources]
 depth-anything-3 = { git = "https://github.com/ByteDance-Seed/Depth-Anything-3.git", rev = "3d835ec1a5802d64a8b8b15f817a1ab54809bfe4" }
 moge = { git = "https://github.com/microsoft/MoGe.git", rev = "925b8ed835a7a9cdb7578ba15c658a0afc969030" }
-torch = [{ index = "pytorch-cu130" }]
-torchvision = [{ index = "pytorch-cu130" }]
-xformers = [{ index = "pytorch-cu130" }]
+torch = [{ index = "pytorch-cuda" }]
+torchvision = [{ index = "pytorch-cuda" }]
