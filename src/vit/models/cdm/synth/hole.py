@@ -1,11 +1,11 @@
-from typing import override
+from typing import cast, override
 
+import timm
 import torch
-from dinov3.hub.backbones import dinov3_vitl16
-from dinov3.models.vision_transformer import DinoVisionTransformer
 from lightning import LightningModule
 from lightning.pytorch.loggers import TensorBoardLogger
 from segmentation_models_pytorch.losses import DiceLoss
+from timm.models import Eva
 from torch import Tensor, nn
 from torchmetrics.classification import (
     BinaryF1Score,
@@ -19,23 +19,18 @@ from vit.heads.dpt import DPT, DPTSegHead
 
 
 class HoleModel(LightningModule):
-    def __init__(self, dinov3_vitl16_checkpoint_path: str, log_n_images: int = 4):
+    def __init__(self, log_n_images: int = 4):
         super().__init__()
-        self.log_n_images = 4
+        self.log_n_images = log_n_images
 
-        self.backbone: DinoVisionTransformer = dinov3_vitl16(pretrained=False)
-        self.dpt = DPT(d_model=self.backbone.embed_dim, batch_norm=True)
-        self.seg_head = DPTSegHead(n_classes=1)
-
-        dino_weights = torch.load(
-            dinov3_vitl16_checkpoint_path,
-            map_location="cpu",
-            mmap=True,
-            weights_only=True,
+        self.backbone = cast(
+            Eva, timm.create_model("vit_large_patch16_dinov3", pretrained=True)
         )
-        self.backbone.load_state_dict(dino_weights)
         self.backbone.requires_grad_(False)
         self.backbone.eval()
+
+        self.dpt = DPT(d_model=self.backbone.num_features, batch_norm=True)
+        self.seg_head = DPTSegHead(n_classes=1)
 
         self.bce_loss = nn.BCEWithLogitsLoss()
         self.dice_loss = DiceLoss(mode="binary")
@@ -82,16 +77,23 @@ class HoleModel(LightningModule):
 
     @torch.compile
     def forward(self, input: Tensor) -> Tensor:
-        B, _, H, W = input.shape
-        H //= self.backbone.patch_size
-        W //= self.backbone.patch_size
+        _, _, H, W = input.shape
+        patch_size_H, patch_size_W = self.backbone.patch_embed.patch_size
+        H //= patch_size_H
+        W //= patch_size_W
         with torch.no_grad():
-            x = self.backbone.get_intermediate_layers(
-                input, n=[5, 11, 17, 23], return_class_token=True
+            x = self.backbone.forward_intermediates(
+                input,
+                indices=[5, 11, 17, 23],
+                return_prefix_tokens=True,
+                norm=False,
+                stop_early=True,
+                intermediates_only=True,
             )
-        patch_tokens, cls_tokens = zip(*x)
-        patch_tokens = [p.reshape(B, H, W, -1) for p in patch_tokens]
-        x = self.dpt.forward(cls_tokens, patch_tokens)  # ty: ignore[invalid-argument-type]
+        patch_tokens, intermediate_tokens = zip(*x)
+        patch_tokens = [p.permute(0, 2, 3, 1) for p in patch_tokens]
+        cls_tokens = [y[:, 0] for y in intermediate_tokens]
+        x = self.dpt.forward(cls_tokens, patch_tokens)
         x = self.seg_head.forward(x)
         return x
 

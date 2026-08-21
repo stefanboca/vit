@@ -20,14 +20,15 @@
     devShells = forAllSystems (system: let
       pkgs = nixpkgsFor.${system};
     in {
-      default = pkgs.mkShell rec {
-        packages = with pkgs; [uv];
+      default = pkgs.mkShellNoCC rec {
+        packages = with pkgs; [gcc uv];
         buildInputs = with pkgs; [
           cudaPackages_13.cudatoolkit
           libx11
+          openssl
         ];
         env = {
-          LD_LIBRARY_PATH = makeLibraryPath buildInputs;
+          LD_LIBRARY_PATH = "/run/opengl-driver/lib:${makeLibraryPath buildInputs}";
           NIX_LD_LIBRARY_PATH = "/run/opengl-driver/lib:/run/current-system/sw/share/nix-ld/lib";
           TRITON_LIBCUDA_PATH = "/run/opengl-driver/lib";
         };

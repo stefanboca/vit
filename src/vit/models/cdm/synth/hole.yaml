@@ -18,7 +18,6 @@ trainer:
 model:
   class_path: vit.models.cdm.synth.HoleModel
   init_args:
-    dinov3_vitl16_checkpoint_path: ${oc.env:HOME}/src/models/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth
     log_n_images: 4
 data:
   class_path: vit.models.cdm.synth.ByteCameraDepthDataModule
