@@ -23,6 +23,7 @@ def colorize_depth(
     upper = torch.as_tensor(vmax, dtype=depth.dtype, device=depth.device)
     denominator = (upper - lower).clamp_min(torch.finfo(depth.dtype).eps)
     normalized = ((depth - lower) / denominator).clamp(0, 1)
+    normalized = torch.nan_to_num(normalized, nan=0.0, posinf=1.0, neginf=0.0)
     indices = (normalized * (lut.shape[0] - 1)).round().long()
     rgb = lut[indices].permute(0, 3, 1, 2)  # [B, H, W, 3] -> [B, 3, H, W]
     if valid is not None:
