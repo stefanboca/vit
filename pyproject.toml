@@ -6,6 +6,9 @@ readme = "README.md"
 requires-python = ">=3.12"
 authors = [{ name = "stefan", email = "stefan.r.boca@gmail.com" }]
 dependencies = [
+  # needed as a transative dep for depth-anything-v3, but only pulled in by
+  # open3d. on aarch64 this failes
+  "addict>=2.4.0",
   "depth-anything-3",
   "lightning[pytorch-extra]>=2.6.5",
   "matplotlib>=3.11.1",

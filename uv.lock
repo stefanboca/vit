@@ -4189,6 +4189,7 @@ name = "vit"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "addict" },
     { name = "depth-anything-3" },
     { name = "lightning", extra = ["pytorch-extra"] },
     { name = "matplotlib" },
@@ -4212,6 +4213,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "addict", specifier = ">=2.4.0" },
     { name = "depth-anything-3", git = "https://github.com/ByteDance-Seed/Depth-Anything-3.git?rev=3d835ec1a5802d64a8b8b15f817a1ab54809bfe4" },
     { name = "lightning", extras = ["pytorch-extra"], specifier = ">=2.6.5" },
     { name = "matplotlib", specifier = ">=3.11.1" },
