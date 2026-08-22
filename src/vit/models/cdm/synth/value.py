@@ -8,8 +8,8 @@ from torch import Tensor, nn
 from torchmetrics.aggregation import MeanMetric
 
 from vit.data.byte_camera_depth import BCDSample
-from vit.utils.depth_anything import DepthAnything3, DepthAnything3Net
 from vit.utils.alignment import align_depth_affine_irls
+from vit.utils.depth_anything import DepthAnything3, DepthAnything3Net
 from vit.utils.tensorboard import TensorBoardImageLoggingMixin
 from vit.utils.visualization import (
     colorize_depth,
@@ -87,8 +87,18 @@ class ValueModel(LightningModule, TensorBoardImageLoggingMixin):
         return self
 
     @override
+    @torch.compile
     def forward(self, input: Tensor) -> Tensor:
-        return self.model.forward(input.unsqueeze(1))["depth"]
+        with torch.no_grad():
+            feats, _ = self.model.backbone.forward(
+                input.unsqueeze(1),
+                cam_token=None,
+                export_feat_layers=[],
+                ref_view_strategy="saddle_balanced",
+            )
+        H, W = input.shape[-2:]
+        output = self.model._process_depth_head(feats, H, W)
+        return output["depth"]
 
     def loss(
         self, preds: Tensor, targets: Tensor, valid: Tensor
