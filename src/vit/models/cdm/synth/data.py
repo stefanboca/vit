@@ -101,7 +101,7 @@ class ByteCameraDepthDataModule(LightningDataModule):
             [
                 v2.RandomResizedCrop(
                     size=size,
-                    scale=(0.3, 1),
+                    scale=(0.5, 1),
                     ratio=(ratio, ratio),
                     antialias=True,
                 ),
