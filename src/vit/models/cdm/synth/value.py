@@ -3,13 +3,12 @@ from typing import override
 import matplotlib
 import numpy as np
 import torch
-from depth_anything_3.api import DepthAnything3
-from depth_anything_3.model import DepthAnything3Net
 from lightning import LightningModule
 from torch import Tensor, nn
 from torchmetrics.aggregation import MeanMetric
 
 from vit.data.byte_camera_depth import BCDSample
+from vit.utils.depth_anything import DepthAnything3, DepthAnything3Net
 from vit.utils.alignment import align_depth_affine_irls
 from vit.utils.tensorboard import TensorBoardImageLoggingMixin
 from vit.utils.visualization import (
