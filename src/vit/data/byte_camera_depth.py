@@ -21,8 +21,9 @@ class FrameInfo:
 
 class BCDSample(TypedDict):
     images: Tensor
+    index: Tensor
     depth: NotRequired[Tensor]
-    hole_mask: NotRequired[Tensor]
+    holes: NotRequired[Tensor]
 
 
 class ByteCameraDepth(Dataset):
@@ -32,12 +33,12 @@ class ByteCameraDepth(Dataset):
         scenes: list[str] | None = None,
         cameras: list[str] | None = None,
         depth: bool = True,
-        hole_mask: bool = False,
+        holes: bool = False,
         transform=None,
     ):
         super().__init__()
         self.depth = depth
-        self.hole_mask = hole_mask
+        self.holes = holes
         self.transform = transform
 
         scene_dirs = (
@@ -87,14 +88,17 @@ class ByteCameraDepth(Dataset):
         frame = self.frames[index]
 
         image = v2.functional.to_dtype(decode_image(str(frame.image)), scale=True)
-        sample: BCDSample = {"images": tv_tensors.Image(image)}
+        sample: BCDSample = {
+            "images": tv_tensors.Image(image),
+            "index": torch.tensor(index),
+        }
 
-        if self.depth or self.hole_mask:
+        if self.depth or self.holes:
             depth = decode_image(str(frame.depth))
             if self.depth:
-                sample["depth"] = tv_tensors.Mask(depth)
-            if self.hole_mask:
-                sample["hole_mask"] = tv_tensors.Mask((depth == 0).to(torch.long))
+                sample["depth"] = tv_tensors.Mask(depth.float())
+            if self.holes:
+                sample["holes"] = tv_tensors.Mask(depth == 0)
 
         if self.transform is not None:
             sample = self.transform(sample)

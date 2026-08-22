@@ -3,7 +3,6 @@ from typing import cast, override
 import timm
 import torch
 from lightning import LightningModule
-from lightning.pytorch.loggers import TensorBoardLogger
 from segmentation_models_pytorch.losses import DiceLoss
 from timm.models import Eva
 from torch import Tensor, nn
@@ -16,12 +15,20 @@ from torchmetrics.classification import (
 
 from vit.data.byte_camera_depth import BCDSample
 from vit.heads.dpt import DPT, DPTSegHead
+from vit.utils.tensorboard import TensorBoardImageLoggingMixin
+from vit.utils.visualization import (
+    imagenet_unnorm,
+)
 
 
-class HoleModel(LightningModule):
-    def __init__(self, log_n_images: int = 4):
+class HoleModel(LightningModule, TensorBoardImageLoggingMixin):
+    def __init__(
+        self,
+        log_n_images: int = 4,
+        val_log_indices: tuple[int, ...] | None = None,
+    ):
         super().__init__()
-        self.log_n_images = log_n_images
+        self._init_image_logging(log_n_images, val_log_indices)
 
         self.backbone = cast(
             Eva, timm.create_model("vit_large_patch16_dinov3", pretrained=True)
@@ -35,39 +42,35 @@ class HoleModel(LightningModule):
         self.bce_loss = nn.BCEWithLogitsLoss()
         self.dice_loss = DiceLoss(mode="binary")
 
-        self.val_metrics = nn.ModuleDict(
-            {
-                "foreground_iou": BinaryJaccardIndex(),
-                "dice": BinaryF1Score(),
-                "precision": BinaryPrecision(),
-                "recall": BinaryRecall(),
-            }
-        )
-        self.test_metrics = nn.ModuleDict(
-            {
-                "foreground_iou": BinaryJaccardIndex(),
-                "dice": BinaryF1Score(),
-                "precision": BinaryPrecision(),
-                "recall": BinaryRecall(),
-            }
-        )
+        def make_metrics():
+            return nn.ModuleDict(
+                {
+                    "foreground_iou": BinaryJaccardIndex(),
+                    "dice": BinaryF1Score(),
+                    "precision": BinaryPrecision(),
+                    "recall": BinaryRecall(),
+                }
+            )
+
+        self.train_metrics = make_metrics()
+        self.val_metrics = make_metrics()
+        self.test_metrics = make_metrics()
 
         self.register_load_state_dict_pre_hook(self._capture_load_prefix)
         self.register_load_state_dict_post_hook(self._remove_backbone_keys)
         self._register_state_dict_hook(self._remove_backbone)
-        self._last_visualized_step = -1
 
     @override
     def training_step(self, batch: BCDSample, batch_idx: int):
-        return self._step("train", batch, batch_idx, {})
+        return self.step("train", batch, batch_idx, self.train_metrics)
 
     @override
     def validation_step(self, batch: BCDSample, batch_idx: int):
-        return self._step("val", batch, batch_idx, self.val_metrics)
+        return self.step("val", batch, batch_idx, self.val_metrics)
 
     @override
     def test_step(self, batch: BCDSample, batch_idx: int):
-        self._step("test", batch, batch_idx, self.test_metrics)
+        self.step("test", batch, batch_idx, self.test_metrics)
 
     @override
     def train(self, mode: bool = True):
@@ -75,7 +78,7 @@ class HoleModel(LightningModule):
         self.backbone.eval()
         return self
 
-    @torch.compile
+    @override
     def forward(self, input: Tensor) -> Tensor:
         _, _, H, W = input.shape
         patch_size_H, patch_size_W = self.backbone.patch_embed.patch_size
@@ -97,24 +100,30 @@ class HoleModel(LightningModule):
         x = self.seg_head.forward(x)
         return x
 
-    @torch.compile
-    def _loss(self, logits: Tensor, targets: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+    def loss(self, logits: Tensor, targets: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         targets = targets.float()
         bce = self.bce_loss.forward(logits, targets)
         dice = self.dice_loss.forward(logits, targets)
         return bce + dice, bce, dice
 
-    def _step(
+    @torch.compile
+    def forward_with_loss(
+        self, input: Tensor, targets: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        logits = self.forward(input)
+        loss, bce, dice = self.loss(logits, targets)
+        return logits, loss, bce, dice
+
+    def step(
         self,
         step: str,
         batch: BCDSample,
         batch_idx: int,
         metrics,
     ):
-        images, targets = batch["images"], batch["hole_mask"]
+        images, targets = batch["images"], batch["holes"]
         batch_size = images.shape[0]
-        logits = self.forward(images)
-        loss, bce, dice = self._loss(logits, targets)
+        logits, loss, bce, dice = self.forward_with_loss(images, targets)
         self.log(
             f"{step}/loss",
             loss,
@@ -151,78 +160,41 @@ class HoleModel(LightningModule):
                     batch_size=batch_size,
                 )
 
-            interval = self.trainer.log_every_n_steps  # ty: ignore[unresolved-attribute]
-            if (
-                self.trainer.is_global_zero
-                and not self.trainer.sanity_checking
-                and isinstance(self.logger, TensorBoardLogger)
-                and (
-                    (
-                        step == "train"
-                        and interval > 0
-                        and self.global_step > 0
-                        and self.global_step % interval == 0
-                        and self.global_step != self._last_visualized_step
-                    )
-                    or (step == "val" and batch_idx == 0)
+            selection = self._images_to_log(step, batch_idx, batch["index"])
+            if selection is not None:
+                vis_indices = selection.batch_indices
+                images_vis = images[vis_indices].to(device="cpu", dtype=torch.float32)
+                targets_vis = targets[vis_indices].to(device="cpu", dtype=torch.float32)
+                probs_bin_vis = probs_bin[vis_indices].to(
+                    device="cpu", dtype=torch.float32
                 )
-            ):
-                self._last_visualized_step = step
+                probs_vis = (
+                    logits[vis_indices].sigmoid().to(device="cpu", dtype=torch.float32)
+                )
+                images_vis = imagenet_unnorm(images_vis)
 
-                images = images[: self.log_n_images].to(
-                    device="cpu", dtype=torch.float32
-                )
-                targets = targets[: self.log_n_images].to(
-                    device="cpu", dtype=torch.float32
-                )
-                probs = (
-                    logits[: self.log_n_images]
-                    .sigmoid()
-                    .to(device="cpu", dtype=torch.float32)
-                )
-                probs_bin = probs_bin[: self.log_n_images].to(
-                    device="cpu", dtype=torch.float32
-                )
-                images.clamp_(0, 1)
-
-                writer = self.logger.experiment
-                writer.add_images(
-                    f"{step}/images",
-                    images,
-                    global_step=self.global_step,
-                )
-                writer.add_images(
-                    f"{step}/targets",
-                    targets,
-                    global_step=self.global_step,
-                )
-                writer.add_images(
-                    f"{step}/probs",
-                    probs,
-                    global_step=self.global_step,
-                )
-                writer.add_images(
-                    f"{step}/probs_bin",
-                    probs_bin,
-                    global_step=self.global_step,
+                self._log_image_comparison(
+                    f"{step}/input_target_probability_prediction",
+                    (images_vis, targets_vis, probs_bin_vis, probs_vis),
+                    selection,
                 )
 
         return loss
 
     def _capture_load_prefix(
         self,
-        module,
-        state_dict,
+        _module,
+        _state_dict,
         prefix,
-        local_metadata,
-        strict,
-        missing_keys,
-        unexpected_keys,
-        error_msgs,
+        _local_metadata,
+        _strict,
+        _missing_keys,
+        _unexpected_keys,
+        _error_msgs,
     ):
         self._load_state_dict_prefix = prefix
 
-    def _remove_backbone_keys(self, module, incompatible_keys):
+    def _remove_backbone_keys(self, _module, incompatible_keys):
         backbone_prefix = f"{self._load_state_dict_prefix}backbone."
         incompatible_keys.missing_keys[:] = [
             key
@@ -230,7 +202,7 @@ class HoleModel(LightningModule):
             if not key.startswith(backbone_prefix)
         ]
 
-    def _remove_backbone(self, module, state_dict, prefix, local_metadata):
+    def _remove_backbone(self, _module, state_dict, prefix, _local_metadata):
         backbone_prefix = f"{prefix}backbone."
         for key in list(state_dict):
             if key.startswith(backbone_prefix):

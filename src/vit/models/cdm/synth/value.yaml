@@ -1,0 +1,37 @@
+trainer:
+  max_epochs: 20
+  accelerator: gpu
+  precision: bf16-mixed
+  log_every_n_steps: 25
+  accumulate_grad_batches: 4
+  logger:
+    class_path: lightning.pytorch.loggers.TensorBoardLogger
+    init_args:
+      save_dir: lightning_logs
+      name: cdm/value
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        filename: epoch={epoch}-val_abs_rel={val/affine_abs_rel_epoch:.4f}
+        monitor: val/affine_abs_rel_epoch
+        mode: min
+        save_last: true
+        auto_insert_metric_name: false
+        save_on_exception: true
+model:
+  class_path: vit.models.cdm.synth.ValueModel
+  init_args:
+    log_n_images: 4
+    val_log_indices: [96, 288, 481, 673]
+data:
+  class_path: vit.models.cdm.synth.ByteCameraDepthDataModule
+  init_args:
+    data_dir: ${oc.env:HOME}/src/datasets/ByteCameraDepth/recorded_data/
+    depth: true
+    holes: true
+    size: [308, 504]
+    batch_size: 8
+optimizer:
+  class_path: torch.optim.AdamW
+  init_args:
+    lr: 1e-3

@@ -12,25 +12,27 @@ class ByteCameraDepthDataModule(LightningDataModule):
     def __init__(
         self,
         data_dir: Path,
+        size: tuple[int, int] = (320, 512),
         depth: bool = True,
-        hole_mask: bool = False,
+        holes: bool = False,
         batch_size: int = 24,
         num_workers: int = 16,
     ):
         super().__init__()
         self.data_dir = data_dir
         self.depth = depth
-        self.hole_mask = hole_mask
+        self.holes = holes
         self.batch_size = batch_size
         self.num_workers = num_workers
 
-        self.resize = v2.Resize((320, 512), antialias=True)
+        ratio = size[1] / size[0]
+        self.resize = v2.Resize(size, antialias=True)
         self.augment = v2.Compose(
             [
                 v2.RandomResizedCrop(
-                    size=(320, 512),
+                    size=size,
                     scale=(0.3, 1),
-                    ratio=(1.6, 1.6),
+                    ratio=(ratio, ratio),
                     antialias=True,
                 ),
                 v2.RandomHorizontalFlip(),
@@ -61,7 +63,7 @@ class ByteCameraDepthDataModule(LightningDataModule):
                 data_dir=self.data_dir,
                 scenes=self.train_scenes,
                 depth=self.depth,
-                hole_mask=self.hole_mask,
+                holes=self.holes,
                 transform=v2.Compose([self.augment, self.normalize]),
             )
 
@@ -70,7 +72,7 @@ class ByteCameraDepthDataModule(LightningDataModule):
                 data_dir=self.data_dir,
                 scenes=self.val_scenes,
                 depth=self.depth,
-                hole_mask=self.hole_mask,
+                holes=self.holes,
                 transform=v2.Compose([self.resize, self.normalize]),
             )
 
@@ -79,7 +81,7 @@ class ByteCameraDepthDataModule(LightningDataModule):
                 data_dir=self.data_dir,
                 scenes=self.test_scenes,
                 depth=self.depth,
-                hole_mask=self.hole_mask,
+                holes=self.holes,
                 transform=v2.Compose([self.resize, self.normalize]),
             )
 

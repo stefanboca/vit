@@ -4191,6 +4191,7 @@ source = { editable = "." }
 dependencies = [
     { name = "depth-anything-3" },
     { name = "lightning", extra = ["pytorch-extra"] },
+    { name = "matplotlib" },
     { name = "moge" },
     { name = "pillow" },
     { name = "segmentation-models-pytorch" },
@@ -4213,6 +4214,7 @@ dev = [
 requires-dist = [
     { name = "depth-anything-3", git = "https://github.com/ByteDance-Seed/Depth-Anything-3.git?rev=3d835ec1a5802d64a8b8b15f817a1ab54809bfe4" },
     { name = "lightning", extras = ["pytorch-extra"], specifier = ">=2.6.5" },
+    { name = "matplotlib", specifier = ">=3.11.1" },
     { name = "moge", git = "https://github.com/microsoft/MoGe.git?rev=925b8ed835a7a9cdb7578ba15c658a0afc969030" },
     { name = "pillow", specifier = ">=12.3.0" },
     { name = "segmentation-models-pytorch", specifier = ">=0.5.0" },
