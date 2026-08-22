@@ -22,7 +22,7 @@ model:
   class_path: vit.models.cdm.synth.ValueModel
   init_args:
     log_n_images: 4
-    val_log_indices: [96, 288, 481, 673]
+    val_log_indices: [100, 911, 1550, 2145]
 data:
   class_path: vit.models.cdm.synth.ByteCameraDepthDataModule
   init_args:

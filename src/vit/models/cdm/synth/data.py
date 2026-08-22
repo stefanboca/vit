@@ -7,6 +7,76 @@ from torchvision.transforms import v2
 
 from vit.data import ByteCameraDepth
 
+BEDROOM_SCENES = {
+    "20250228_1418",
+    "20250228_2158",
+    "20250306_2241",
+}
+BATHROOM_SCENES = {
+    "20250301_2338",
+    "20250306_2154",
+    "20250306_2207",
+}
+LIVING_ROOM_SCENES = {
+    "20250302_0023",
+    "20250306_2142",
+    "20250306_2148",
+}
+KITCHEN_SCENES = {
+    "20250302_2352",
+    "20250302_2355",
+    "20250302_2357",
+    "20250302_2358",
+    "20250306_2246",
+    "20250317_2359",
+    "20250318_0008",
+    "20250318_0011",
+    "20250318_0013",
+    "20250318_0014",
+    "20250318_0016",
+}
+MARKET_SCENES = {
+    "20250307_2323",
+    "20250307_2327",
+    "20250307_2331",
+    "20250307_2337",
+    "20250307_2339",
+    "20250318_0029",
+    "20250318_0032",
+    "20250318_0034",
+}
+OFFICE_SCENES = {
+    "20250307_2349",
+    "20250318_0021",
+    "20250318_0023",
+    "20250320_2320",
+    "20250320_2321",
+    "20250320_2323",
+    "20250320_2324",
+    "20250320_2326",
+    "20250320_2328",
+}
+BREAKROOM_SCENES = {
+    "20250320_2331",
+    "20250320_2334",
+}
+
+SCENE_CATEGORIES = (
+    BEDROOM_SCENES,
+    BATHROOM_SCENES,
+    LIVING_ROOM_SCENES,
+    KITCHEN_SCENES,
+    MARKET_SCENES,
+    OFFICE_SCENES,
+    BREAKROOM_SCENES,
+)
+ALL_SCENES = set().union(*SCENE_CATEGORIES)
+assert sum(map(len, SCENE_CATEGORIES)) == len(ALL_SCENES)
+
+TRAIN_SCENES = LIVING_ROOM_SCENES | KITCHEN_SCENES | MARKET_SCENES | OFFICE_SCENES
+VAL_SCENES = BEDROOM_SCENES | BREAKROOM_SCENES
+TEST_SCENES = BATHROOM_SCENES
+
 
 class ByteCameraDepthDataModule(LightningDataModule):
     def __init__(
@@ -48,13 +118,19 @@ class ByteCameraDepthDataModule(LightningDataModule):
             ]
         )
 
-        scenes = sorted(
+        available_scenes = {
             scene.name for scene in self.data_dir.iterdir() if scene.is_dir()
-        )
-        assert len(scenes) == 39
-        self.train_scenes = scenes[:-6]
-        self.val_scenes = scenes[-6:-3]
-        self.test_scenes = scenes[-3:]
+        }
+        if available_scenes != ALL_SCENES:
+            raise ValueError(
+                "scene split does not match available scenes; "
+                f"\tmissing={sorted(ALL_SCENES - available_scenes)}, "
+                f"\tunexpected={sorted(available_scenes - ALL_SCENES)}"
+            )
+
+        self.train_scenes = sorted(TRAIN_SCENES)
+        self.val_scenes = sorted(VAL_SCENES)
+        self.test_scenes = sorted(TEST_SCENES)
 
     @override
     def setup(self, stage):
