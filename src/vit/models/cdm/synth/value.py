@@ -87,7 +87,6 @@ class ValueModel(LightningModule, TensorBoardImageLoggingMixin):
         return self
 
     @override
-    @torch.compile
     def forward(self, input: Tensor) -> Tensor:
         with torch.no_grad():
             feats, _ = self.model.backbone.forward(
@@ -114,6 +113,7 @@ class ValueModel(LightningModule, TensorBoardImageLoggingMixin):
         loss = (pixel_loss * valid).sum() / valid.sum().clamp_min(1)
         return aligned_preds, loss
 
+    @torch.compile
     def forward_with_loss(
         self, input: Tensor, targets: Tensor, valid: Tensor
     ) -> tuple[Tensor, Tensor, Tensor]:
