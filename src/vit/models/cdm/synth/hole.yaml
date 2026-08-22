@@ -14,7 +14,7 @@ trainer:
         filename: epoch={epoch}-val_dice={val/dice_epoch:.4f}
         monitor: val/dice_epoch
         mode: max
-        save_last: true
+        save_last: "link"
         auto_insert_metric_name: false
         save_on_exception: true
 model:

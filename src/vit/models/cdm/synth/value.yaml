@@ -4,8 +4,6 @@ trainer:
   precision: bf16-mixed
   log_every_n_steps: 25
   accumulate_grad_batches: 4
-  gradient_clip_val: 1.0
-  gradient_clip_algorithm: norm
   logger:
     class_path: lightning.pytorch.loggers.TensorBoardLogger
     init_args:
@@ -17,7 +15,7 @@ trainer:
         filename: epoch={epoch}-val_abs_rel={val/affine_abs_rel_epoch:.4f}
         monitor: val/affine_abs_rel_epoch
         mode: min
-        save_last: true
+        save_last: "link"
         auto_insert_metric_name: false
         save_on_exception: true
 model:
@@ -36,4 +34,4 @@ data:
 optimizer:
   class_path: torch.optim.AdamW
   init_args:
-    lr: 1e-4
+    lr: 1e-5

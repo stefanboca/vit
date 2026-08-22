@@ -163,7 +163,11 @@ class ValueModel(LightningModule, TensorBoardImageLoggingMixin):
         batch_idx: int,
         metrics,
     ):
-        images, targets, holes = batch["images"], batch["depth"], batch["holes"]
+        images, targets, holes = (
+            batch["images"],
+            batch["depth"] / 1000.0,
+            batch["holes"],
+        )
         batch_size = images.shape[0]
         valid = ~holes
         _preds, aligned_preds, loss = self.forward_with_loss(images, targets, valid)
