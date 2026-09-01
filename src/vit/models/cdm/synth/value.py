@@ -10,6 +10,7 @@ from torchmetrics.aggregation import MeanMetric
 from vit.data.byte_camera_depth import BCDSample
 from vit.utils.alignment import align_depth_affine_irls
 from vit.utils.depth_anything import DepthAnything3, DepthAnything3Net
+from vit.utils.state_dict import StateDictExcludeModulesMixin
 from vit.utils.tensorboard import TensorBoardImageLoggingMixin
 from vit.utils.visualization import (
     colorize_depth,
@@ -17,7 +18,11 @@ from vit.utils.visualization import (
 )
 
 
-class ValueModel(LightningModule, TensorBoardImageLoggingMixin):
+class ValueModel(
+    LightningModule,
+    TensorBoardImageLoggingMixin,
+    StateDictExcludeModulesMixin,
+):
     depth_color_lut: Tensor
 
     def __init__(
@@ -64,9 +69,7 @@ class ValueModel(LightningModule, TensorBoardImageLoggingMixin):
             persistent=False,
         )
 
-        self.register_load_state_dict_pre_hook(self._capture_load_prefix)
-        self.register_load_state_dict_post_hook(self._remove_backbone_keys)
-        self._register_state_dict_hook(self._remove_backbone)
+        self._exclude_modules_from_state_dict("model.backbone")
 
     @override
     def training_step(self, batch: BCDSample, batch_idx: int):
@@ -246,30 +249,3 @@ class ValueModel(LightningModule, TensorBoardImageLoggingMixin):
                 )
 
         return loss
-
-    def _capture_load_prefix(
-        self,
-        _module,
-        _state_dict,
-        prefix,
-        _local_metadata,
-        _strict,
-        _missing_keys,
-        _unexpected_keys,
-        _error_msgs,
-    ):
-        self._load_state_dict_prefix = prefix
-
-    def _remove_backbone_keys(self, _module, incompatible_keys):
-        backbone_prefix = f"{self._load_state_dict_prefix}model.backbone."
-        incompatible_keys.missing_keys[:] = [
-            key
-            for key in incompatible_keys.missing_keys
-            if not key.startswith(backbone_prefix)
-        ]
-
-    def _remove_backbone(self, _module, state_dict, prefix, _local_metadata):
-        backbone_prefix = f"{prefix}model.backbone."
-        for key in list(state_dict):
-            if key.startswith(backbone_prefix):
-                del state_dict[key]

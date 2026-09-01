@@ -15,13 +15,18 @@ from torchmetrics.classification import (
 
 from vit.data.byte_camera_depth import BCDSample
 from vit.heads.dpt import DPT, DPTSegHead
+from vit.utils.state_dict import StateDictExcludeModulesMixin
 from vit.utils.tensorboard import TensorBoardImageLoggingMixin
 from vit.utils.visualization import (
     imagenet_unnorm,
 )
 
 
-class HoleModel(LightningModule, TensorBoardImageLoggingMixin):
+class HoleModel(
+    LightningModule,
+    TensorBoardImageLoggingMixin,
+    StateDictExcludeModulesMixin,
+):
     def __init__(
         self,
         log_n_images: int = 4,
@@ -56,9 +61,7 @@ class HoleModel(LightningModule, TensorBoardImageLoggingMixin):
         self.val_metrics = make_metrics()
         self.test_metrics = make_metrics()
 
-        self.register_load_state_dict_pre_hook(self._capture_load_prefix)
-        self.register_load_state_dict_post_hook(self._remove_backbone_keys)
-        self._register_state_dict_hook(self._remove_backbone)
+        self._exclude_modules_from_state_dict("backbone")
 
     @override
     def training_step(self, batch: BCDSample, batch_idx: int):
@@ -180,30 +183,3 @@ class HoleModel(LightningModule, TensorBoardImageLoggingMixin):
                 )
 
         return loss
-
-    def _capture_load_prefix(
-        self,
-        _module,
-        _state_dict,
-        prefix,
-        _local_metadata,
-        _strict,
-        _missing_keys,
-        _unexpected_keys,
-        _error_msgs,
-    ):
-        self._load_state_dict_prefix = prefix
-
-    def _remove_backbone_keys(self, _module, incompatible_keys):
-        backbone_prefix = f"{self._load_state_dict_prefix}backbone."
-        incompatible_keys.missing_keys[:] = [
-            key
-            for key in incompatible_keys.missing_keys
-            if not key.startswith(backbone_prefix)
-        ]
-
-    def _remove_backbone(self, _module, state_dict, prefix, _local_metadata):
-        backbone_prefix = f"{prefix}backbone."
-        for key in list(state_dict):
-            if key.startswith(backbone_prefix):
-                del state_dict[key]
