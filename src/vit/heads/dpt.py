@@ -102,10 +102,14 @@ class ReassembleBlock(nn.Module):
     ):
         super().__init__()
 
-        self.proj = nn.Sequential(
-            nn.Linear(d_model * 2, d_model, device=device),
-            nn.GELU(),
+        self.patch_proj = nn.Linear(d_model, d_model, device=device)
+        self.cls_proj = nn.Linear(
+            d_model,
+            d_model,
+            bias=False,
+            device=device,
         )
+
         self.conv1 = nn.Conv2d(d_model, hidden_channels, kernel_size=1, device=device)
         if index in (0, 1):
             size = [4, 2][index]
@@ -133,20 +137,67 @@ class ReassembleBlock(nn.Module):
         )
 
     def forward(self, cls_token: Tensor, patch_tokens: Tensor) -> Tensor:
-        x = torch.cat(
-            [patch_tokens, cls_token[:, None, None, :].expand_as(patch_tokens)],
-            dim=-1,
-        )
-        x: Tensor = self.proj(x)
-        x = x.permute([0, 3, 1, 2])  # [B, D, H, W]
+        patch_x = self.patch_proj(patch_tokens)
+        cls_x = self.cls_proj(cls_token)[:, None, None, :]
 
-        x = self.conv1.forward(x)
+        x = F.gelu(patch_x + cls_x)
+        x = x.permute(0, 3, 1, 2)
+
+        x = self.conv1(x)
         if self.conv2 is not None:
-            x = self.conv2.forward(x)
+            x = self.conv2(x)
 
-        x = self.conv3.forward(x)
+        return self.conv3(x)
 
-        return x
+    # TODO: remove once old checkpoints are converted
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        old_weight_key = f"{prefix}proj.0.weight"
+        old_bias_key = f"{prefix}proj.0.bias"
+
+        patch_weight_key = f"{prefix}patch_proj.weight"
+        patch_bias_key = f"{prefix}patch_proj.bias"
+        cls_weight_key = f"{prefix}cls_proj.weight"
+
+        if old_weight_key in state_dict:
+            old_weight = state_dict.pop(old_weight_key)
+            split = self.patch_proj.in_features
+
+            expected_shape = (
+                self.patch_proj.out_features,
+                self.patch_proj.in_features + self.cls_proj.in_features,
+            )
+
+            if tuple(old_weight.shape) != expected_shape:
+                error_msgs.append(
+                    f"{old_weight_key} has shape {tuple(old_weight.shape)}, "
+                    f"expected {expected_shape}"
+                )
+            else:
+                patch_weight, cls_weight = old_weight.split(split, dim=1)
+                state_dict[patch_weight_key] = patch_weight.clone()
+                state_dict[cls_weight_key] = cls_weight.clone()
+
+        if old_bias_key in state_dict:
+            state_dict[patch_bias_key] = state_dict.pop(old_bias_key)
+
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
 
 
 class FeatureFusionBlock(nn.Module):

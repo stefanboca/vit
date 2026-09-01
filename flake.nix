@@ -25,6 +25,7 @@
         buildInputs = with pkgs; [
           cudaPackages_13.cudatoolkit
           libx11
+          libGL
           openssl
         ];
         env = {

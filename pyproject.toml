@@ -3,15 +3,15 @@ name = "vit"
 version = "0.1.0"
 description = ""
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 authors = [{ name = "stefan", email = "stefan.r.boca@gmail.com" }]
 dependencies = [
-  # needed as a transative dep for depth-anything-v3, but only pulled in by
-  # open3d. on aarch64 this failes
+  # Needed by Depth Anything 3, but only pulled in through optional exporters.
   "addict>=2.4.0",
   "depth-anything-3",
   "lightning[pytorch-extra]>=2.6.5",
   "matplotlib>=3.11.1",
+  "ml-dtypes>=0.5.0",
   "pillow>=12.3.0",
   "segmentation-models-pytorch>=0.5.0",
   "timm>=1.0.28",
@@ -19,6 +19,13 @@ dependencies = [
   "torchdata>=0.11.0",
   "torchmetrics>=1.9.0",
   "torchvision>=0.28.0",
+]
+
+[project.optional-dependencies]
+onnx = [
+  "onnx>=1.19.0",
+  "onnxscript>=0.5.0",
+  "onnxruntime-gpu>=1.29.0",
 ]
 
 [dependency-groups]
@@ -35,8 +42,10 @@ build-backend = "uv_build"
 
 [tool.uv]
 override-dependencies = [
-  "open3d ; sys_platform != 'linux' or platform_machine != 'aarch64'",
-  "pycolmap ; sys_platform != 'linux' or platform_machine != 'aarch64'",
+  "numpy>=2",
+  # Depth Anything 3's optional exporters do not support Python 3.14.
+  "open3d ; python_version < '3.14'",
+  "pycolmap ; python_version < '3.14'",
 ]
 
 [[tool.uv.index]]
