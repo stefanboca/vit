@@ -97,9 +97,8 @@ class HoleModel(
                 intermediates_only=True,
             )
         patch_tokens, intermediate_tokens = zip(*x)
-        patch_tokens = [p.permute(0, 2, 3, 1) for p in patch_tokens]
         cls_tokens = [y[:, 0] for y in intermediate_tokens]
-        x = self.dpt.forward(cls_tokens, patch_tokens)
+        x = self.dpt.forward(cls_tokens, list(patch_tokens))
         x = self.seg_head.forward(x)
         return x
 

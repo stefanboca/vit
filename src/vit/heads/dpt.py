@@ -102,7 +102,12 @@ class ReassembleBlock(nn.Module):
     ):
         super().__init__()
 
-        self.patch_proj = nn.Linear(d_model, d_model, device=device)
+        self.patch_proj = nn.Conv2d(
+            d_model,
+            d_model,
+            kernel_size=1,
+            device=device,
+        )
         self.cls_proj = nn.Linear(
             d_model,
             d_model,
@@ -138,18 +143,15 @@ class ReassembleBlock(nn.Module):
 
     def forward(self, cls_token: Tensor, patch_tokens: Tensor) -> Tensor:
         patch_x = self.patch_proj(patch_tokens)
-        cls_x = self.cls_proj(cls_token)[:, None, None, :]
+        cls_x = self.cls_proj(cls_token)[:, :, None, None]
 
         x = F.gelu(patch_x + cls_x)
-        x = x.permute(0, 3, 1, 2)
-
         x = self.conv1(x)
         if self.conv2 is not None:
             x = self.conv2(x)
 
         return self.conv3(x)
 
-    # TODO: remove once old checkpoints are converted
     def _load_from_state_dict(
         self,
         state_dict,
@@ -169,11 +171,10 @@ class ReassembleBlock(nn.Module):
 
         if old_weight_key in state_dict:
             old_weight = state_dict.pop(old_weight_key)
-            split = self.patch_proj.in_features
-
+            split = self.patch_proj.in_channels
             expected_shape = (
-                self.patch_proj.out_features,
-                self.patch_proj.in_features + self.cls_proj.in_features,
+                self.patch_proj.out_channels,
+                self.patch_proj.in_channels + self.cls_proj.in_features,
             )
 
             if tuple(old_weight.shape) != expected_shape:
@@ -183,7 +184,7 @@ class ReassembleBlock(nn.Module):
                 )
             else:
                 patch_weight, cls_weight = old_weight.split(split, dim=1)
-                state_dict[patch_weight_key] = patch_weight.clone()
+                state_dict[patch_weight_key] = patch_weight[:, :, None, None].clone()
                 state_dict[cls_weight_key] = cls_weight.clone()
 
         if old_bias_key in state_dict:

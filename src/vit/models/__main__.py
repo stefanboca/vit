@@ -8,6 +8,8 @@ from lightning import LightningModule, Trainer
 from lightning.pytorch.cli import LightningCLI
 from lightning.pytorch.utilities.model_summary.model_summary import summarize
 
+from vit.utils.hailo import hailo_eva_attention_export
+
 
 class VitTrainer(Trainer):
     def export_onnx(
@@ -19,6 +21,7 @@ class VitTrainer(Trainer):
         opset_version: int = 21,
         precision: Literal["full", "half"] = "full",
         verify: bool = True,
+        dynamic_batch: bool = True,
     ):
         """Export a checkpoint to ONNX."""
         if ckpt_path is not None:
@@ -41,18 +44,22 @@ class VitTrainer(Trainer):
         print(summarize(model))
 
         input_sample = torch.randn(input_shape, dtype=model.dtype, device=device)  # ty: ignore[no-matching-overload]
-        batch = torch.export.Dim("batch", min=1)
-        model.to_onnx(
-            output_path,
-            input_sample,
-            input_names=["input"],
-            output_names=["output"],
-            dynamic_shapes={"input": {0: batch}},
-            opset_version=opset_version,
-            external_data=False,
-            dynamo=True,
-            verify=verify,
-        )
+        dynamic_shapes = None
+        if dynamic_batch:
+            batch = torch.export.Dim("batch", min=1)
+            dynamic_shapes = {"input": {0: batch}}
+        with hailo_eva_attention_export(model):
+            model.to_onnx(
+                output_path,
+                input_sample,
+                input_names=["input"],
+                output_names=["output"],
+                dynamic_shapes=dynamic_shapes,
+                opset_version=opset_version,
+                external_data=False,
+                dynamo=True,
+                verify=verify,
+            )
 
 
 class VitCLI(LightningCLI):
