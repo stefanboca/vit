@@ -1,51 +1,70 @@
-from collections import defaultdict
+from abc import ABC, abstractmethod
+from collections.abc import Iterable, Iterator
 
 import torch
-from torch.utils.data import Sampler
+from torch.utils.data import Dataset, Sampler
+
+ImageSize = tuple[int, int]
+
+
+class SizedImageDataset(Dataset, ABC):
+    """Dataset that exposes image sizes without loading all size metadata."""
+
+    @abstractmethod
+    def size_counts(self) -> Iterable[tuple[ImageSize, int]]:
+        """Yield each distinct image size and its number of examples."""
+
+    @abstractmethod
+    def indices_for_size(
+        self, size: ImageSize, *, shuffle: bool, generator: torch.Generator | None
+    ) -> Iterable[int]:
+        """Yield indices with ``size``; implementations may stream from storage."""
 
 
 class SameSizeBatchSampler(Sampler[list[int]]):
     def __init__(
         self,
-        sizes: list[tuple[int, int]],
+        dataset: SizedImageDataset,
         batch_size: int,
         *,
         shuffle: bool = True,
         drop_last: bool = False,
+        generator: torch.Generator | None = None,
     ):
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+
+        self.dataset = dataset
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.drop_last = drop_last
+        self.generator = generator
 
-        self.buckets: defaultdict[tuple[int, int], list[int]] = defaultdict(list)
-        for index, size in enumerate(sizes):
-            self.buckets[size].append(index)
-
-    def __iter__(self):
-        batches = []
-        for indices in self.buckets.values():
-            if self.shuffle:
-                perm = torch.randperm(len(indices)).tolist()
-                indices = [indices[i] for i in perm]
-
-            for start in range(0, len(indices), self.batch_size):
-                batch = indices[start : start + self.batch_size]
-                if len(batch) == self.batch_size or not self.drop_last:
-                    batches.append(batch)
-
+    def __iter__(self) -> Iterator[list[int]]:
+        groups = list(self.dataset.size_counts())
         if self.shuffle:
-            perm = torch.randperm(len(batches)).tolist()
-            batches = [batches[i] for i in perm]
+            perm = torch.randperm(len(groups), generator=self.generator).tolist()
+            groups = [groups[i] for i in perm]
 
-        yield from batches
+        for size, _count in groups:
+            batch = []
+            for index in self.dataset.indices_for_size(
+                size, shuffle=self.shuffle, generator=self.generator
+            ):
+                batch.append(index)
+                if len(batch) == self.batch_size:
+                    yield batch
+                    batch = []
 
-    def __len__(self):
+            if batch and not self.drop_last:
+                yield batch
+
+    def __len__(self) -> int:
         if self.drop_last:
             return sum(
-                len(bucket) // self.batch_size for bucket in self.buckets.values()
+                count // self.batch_size for _, count in self.dataset.size_counts()
             )
-        else:
-            return sum(
-                (len(bucket) + self.batch_size - 1) // self.batch_size
-                for bucket in self.buckets.values()
-            )
+        return sum(
+            (count + self.batch_size - 1) // self.batch_size
+            for _, count in self.dataset.size_counts()
+        )
