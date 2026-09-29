@@ -41,11 +41,9 @@ class Seg(
 
     @override
     def forward(self, input: Tensor) -> Tensor:
-        """Return per-class probabilities for inference and export."""
         return F.softmax(self.forward_logits(input), dim=1)
 
     def forward_logits(self, input: Tensor) -> Tensor:
-        """Return raw logits for losses such as cross entropy during training."""
         with torch.no_grad():
             x = self.backbone.forward_intermediates(
                 input,
