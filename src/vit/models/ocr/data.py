@@ -18,6 +18,8 @@ class SynthTigerDataModule(LightningDataModule):
         val_fraction: float = 0.01,
         test_fraction: float = 0.01,
         split_seed: int = 42,
+        load_features: bool = False,
+        features_dir: Path | None = None,
     ):
         super().__init__()
         self.data_dir = Path(data_dir)
@@ -26,10 +28,24 @@ class SynthTigerDataModule(LightningDataModule):
         self.val_fraction = val_fraction
         self.test_fraction = test_fraction
         self.split_seed = split_seed
+        self.load_features = load_features
+        self.features_dir = (
+            Path(features_dir)
+            if features_dir is not None
+            else self.data_dir.with_name(f"{self.data_dir.name}-features-fp16")
+        )
 
         self.normalize = v2.Normalize(
             mean=(0.485, 0.456, 0.406),
             std=(0.229, 0.224, 0.225),
+        )
+
+    def _dataset(self, split: str) -> SynthTiger:
+        return SynthTiger(
+            self.data_dir / "gt.db",
+            index_filter=self._split_filter(split),
+            transform=None if self.load_features else self.normalize,
+            features_dir=self.features_dir if self.load_features else None,
         )
 
     def _split_filter(self, split: str) -> tuple[str, tuple[int, ...]]:
@@ -50,25 +66,13 @@ class SynthTigerDataModule(LightningDataModule):
     @override
     def setup(self, stage):
         if stage in "fit":
-            self.train = SynthTiger(
-                self.data_dir / "gt.db",
-                index_filter=self._split_filter("train"),
-                transform=self.normalize,
-            )
+            self.train = self._dataset("train")
 
         if stage in ("fit", "validate"):
-            self.val = SynthTiger(
-                self.data_dir / "gt.db",
-                index_filter=self._split_filter("val"),
-                transform=self.normalize,
-            )
+            self.val = self._dataset("val")
 
         if stage in "test":
-            self.test = SynthTiger(
-                self.data_dir / "gt.db",
-                index_filter=self._split_filter("test"),
-                transform=self.normalize,
-            )
+            self.test = self._dataset("test")
 
     @override
     def train_dataloader(self) -> StatefulDataLoader:

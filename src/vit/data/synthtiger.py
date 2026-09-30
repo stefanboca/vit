@@ -2,22 +2,30 @@ import argparse
 import os
 import sqlite3
 import sys
+from collections import Counter
 from collections.abc import Iterator
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from itertools import batched
 from pathlib import Path
 from typing import override
 
+import timm
 import torch
 from PIL import Image
+from torch.utils.data import DataLoader
 from torchvision.io import decode_image
 from torchvision.transforms import v2
 from tqdm import tqdm
 
-from vit.utils.same_size_batch_sampler import ImageSize, SizedImageDataset
+from vit.utils.same_size_batch_sampler import (
+    ImageSize,
+    SameSizeBatchSampler,
+    SizedImageDataset,
+)
 
 DB_BATCH_SIZE = 4096
 MAX_IN_FLIGHT = 4 * DB_BATCH_SIZE
+DEFAULT_OCR_BACKBONE = "vit_small_plus_patch16_dinov3"
 
 
 class SynthTiger(SizedImageDataset):
@@ -30,6 +38,7 @@ class SynthTiger(SizedImageDataset):
         transform=None,
         *,
         index_filter: tuple[str, tuple[int, ...]] = ("", ()),
+        features_dir: Path | None = None,
     ):
         self.db_path = Path(db_path)
         self.image_root = (
@@ -37,6 +46,7 @@ class SynthTiger(SizedImageDataset):
         )
         self.transform = transform
         self.index_filter = index_filter
+        self.features_dir = Path(features_dir) if features_dir is not None else None
 
         self._db: sqlite3.Connection | None = None
         self._db_pid: int | None = None
@@ -70,21 +80,40 @@ class SynthTiger(SizedImageDataset):
 
     @override
     def __getitem__(self, index: int) -> tuple[torch.Tensor, str]:
+        image_or_features, label, _path = self._get_item(index)
+        return image_or_features, label
+
+    def get_with_path(self, index: int) -> tuple[torch.Tensor, str, str]:
+        """Return an image or cached features, label, and database path."""
+        return self._get_item(index)
+
+    def _get_item(self, index: int) -> tuple[torch.Tensor, str, str]:
         row = (
             self._connection()
-            .execute("SELECT path, label FROM items WHERE idx = ?", (index + 1,))
+            .execute(
+                "SELECT path, label FROM items WHERE idx = ?",
+                (index + 1,),
+            )
             .fetchone()
         )
         if row is None:
             raise IndexError(index)
 
         path, label = row
+        if self.features_dir is not None:
+            features = torch.load(
+                self.features_dir / f"{path}.pt",
+                map_location="cpu",
+                weights_only=True,
+            )
+            return features, label, path
+
         image = v2.functional.to_dtype(
             decode_image(str(self.image_root / path)), scale=True
         )
         if self.transform is not None:
             image = self.transform(image)
-        return image, label
+        return image, label, path
 
     @override
     def size_counts(self) -> Iterator[tuple[ImageSize, int]]:
@@ -217,6 +246,131 @@ def gen_db(args):
     db.execute("CREATE INDEX items_size_idx ON items(width, height, idx)")
 
 
+class _FeatureCacheDataset(SizedImageDataset):
+    """Image dataset view that samples only items missing cached features."""
+
+    def __init__(self, dataset: SynthTiger, features_dir: Path):
+        self.dataset = dataset
+        self.features_dir = features_dir
+        self._missing_size_counts: tuple[tuple[ImageSize, int], ...] | None = None
+
+    def __len__(self):
+        return len(self.dataset)
+
+    @override
+    def __getitem__(self, index: int):
+        image, _label, path = self.dataset.get_with_path(index)
+        return path, image
+
+    @override
+    def size_counts(self) -> Iterator[tuple[ImageSize, int]]:
+        if self._missing_size_counts is None:
+            counts: Counter[ImageSize] = Counter()
+            for path, width, height in self.dataset._connection().execute(
+                "SELECT path, width, height FROM items"
+            ):
+                feature_path = self.features_dir / f"{path}.pt"
+                if not feature_path.is_file():
+                    counts[(width, height)] += 1
+            self._missing_size_counts = tuple(sorted(counts.items()))
+        yield from self._missing_size_counts
+
+    @override
+    def indices_for_size(
+        self,
+        size: ImageSize,
+        *,
+        shuffle: bool,
+        generator: torch.Generator | None,
+    ) -> Iterator[int]:
+        order = "random()" if shuffle else "idx"
+        for index, path in self.dataset._connection().execute(
+            "SELECT idx, path FROM items WHERE width = ? AND height = ? "
+            f"ORDER BY {order}",
+            size,
+        ):
+            if not (self.features_dir / f"{path}.pt").is_file():
+                yield index - 1
+
+
+def save_tensor_atomic(tensor: torch.Tensor, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with temporary_path.open("wb") as file:
+            torch.save(tensor, file)
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def save_feature_batch(
+    paths: list[str], features: torch.Tensor, features_dir: Path
+) -> int:
+    for path, feature in zip(paths, features, strict=True):
+        # Each batch row is a view into the full batch storage. Clone so each
+        # .pt contains only that image's feature tensor.
+        save_tensor_atomic(feature.clone(), features_dir / f"{path}.pt")
+    return len(paths)
+
+
+@torch.inference_mode()
+def cache_features(args):
+    data_dir: Path = args.dataset
+    features_dir: Path = args.features_dir
+    features_dir.mkdir(parents=True, exist_ok=True)
+
+    normalize = v2.Normalize(
+        mean=(0.485, 0.456, 0.406),
+        std=(0.229, 0.224, 0.225),
+    )
+    images = SynthTiger(data_dir / "gt.db", transform=normalize)
+    dataset = _FeatureCacheDataset(images, features_dir)
+    missing_count = sum(count for _, count in dataset.size_counts())
+    if missing_count == 0:
+        print("All image features are already cached.")
+        return
+
+    loader = DataLoader(
+        dataset,
+        batch_sampler=SameSizeBatchSampler(dataset, args.batch_size, shuffle=False),
+        num_workers=args.num_workers,
+        pin_memory=args.device.startswith("cuda"),
+        persistent_workers=args.num_workers > 0,
+    )
+    backbone = timm.create_model(args.backbone, pretrained=True).to(args.device)
+    backbone.eval()
+
+    pending = set()
+    with (
+        ThreadPoolExecutor(max_workers=args.writer_workers) as executor,
+        tqdm(
+            total=missing_count, desc="Caching backbone features", unit="image"
+        ) as progress,
+    ):
+        for paths, images in loader:
+            images = images.to(args.device, non_blocking=True)
+            if images.device.type == "cuda":
+                with torch.autocast("cuda", dtype=torch.bfloat16):
+                    features = backbone.forward_features(images)  # ty: ignore[call-non-callable]
+            else:
+                features = backbone.forward_features(images)  # ty: ignore[call-non-callable]
+            features = features.to(device="cpu", dtype=torch.float16)
+
+            pending.add(
+                executor.submit(save_feature_batch, paths, features, features_dir)
+            )
+            if len(pending) >= args.max_in_flight_batches:
+                completed, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for future in completed:
+                    progress.update(future.result())
+
+        while pending:
+            completed, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in completed:
+                progress.update(future.result())
+
+
 def main():
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(required=True)
@@ -225,7 +379,23 @@ def main():
     gen_db_parser.add_argument("dataset", type=Path)
     gen_db_parser.set_defaults(func=gen_db)
 
+    cache_parser = subparsers.add_parser("cache-features")
+    cache_parser.add_argument("dataset", type=Path)
+    cache_parser.add_argument("--features-dir", type=Path, default=None)
+    cache_parser.add_argument("--backbone", default=DEFAULT_OCR_BACKBONE)
+    cache_parser.add_argument("--batch-size", type=int, default=256)
+    cache_parser.add_argument("--num-workers", type=int, default=16)
+    cache_parser.add_argument("--writer-workers", type=int, default=2)
+    cache_parser.add_argument("--max-in-flight-batches", type=int, default=2)
+    cache_parser.add_argument(
+        "--device",
+        default="cuda" if torch.cuda.is_available() else "cpu",
+    )
+    cache_parser.set_defaults(func=cache_features)
+
     args = parser.parse_args()
+    if getattr(args, "features_dir", None) is None:
+        args.features_dir = args.dataset.with_name(f"{args.dataset.name}-features-fp16")
     args.func(args)
 
 

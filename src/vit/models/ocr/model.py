@@ -30,6 +30,7 @@ class OcrVit(LightningModule, StateDictExcludeModulesMixin):
         warmup_steps: int = 1000,
         total_steps: int = 800_000,
         min_learning_rate: float = 5e-6,
+        cached_features: bool = False,
     ):
         super().__init__()
         self.max_generation_length = max_generation_length
@@ -40,11 +41,18 @@ class OcrVit(LightningModule, StateDictExcludeModulesMixin):
         self.total_steps = total_steps
         self.min_learning_rate = min_learning_rate
 
-        self.backbone = cast(
-            Eva, timm.create_model("vit_small_plus_patch16_dinov3", pretrained=True)
+        backbone = cast(
+            Eva,
+            timm.create_model(
+                "vit_small_plus_patch16_dinov3", pretrained=not cached_features
+            ),
         )
-        self.backbone.requires_grad_(False)
-        self.backbone.eval()
+        d_model = backbone.embed_dim
+        self.backbone: Eva | None = None
+        if not cached_features:
+            self.backbone = backbone
+            self.backbone.requires_grad_(False)
+            self.backbone.eval()
 
         self.tokenizer = Tokenizer.from_pretrained("google/flan-t5-base")
         pad_id = self.tokenizer.token_to_id("<pad>")
@@ -54,7 +62,6 @@ class OcrVit(LightningModule, StateDictExcludeModulesMixin):
         self.pad_id = pad_id
         self.eos_id = eos_id
 
-        d_model = self.backbone.embed_dim
         self.embedding = nn.Embedding(
             self.tokenizer.get_vocab_size(with_added_tokens=True), d_model
         )
@@ -102,7 +109,8 @@ class OcrVit(LightningModule, StateDictExcludeModulesMixin):
     @override
     def train(self, mode: bool = True):
         super().train(mode)
-        self.backbone.eval()
+        if self.backbone is not None:
+            self.backbone.eval()
         return self
 
     def _prepare_targets(
@@ -142,13 +150,19 @@ class OcrVit(LightningModule, StateDictExcludeModulesMixin):
         memory: Tensor | None = None,
     ) -> Tensor:
         if memory is None:
-            with torch.no_grad():
-                memory = self.backbone.forward_features(imgs)
+            memory = self._encode_images(imgs)
 
         tgt = self.embedding(decoder_input_ids)
         features = self.decoder(tgt, memory, tgt_valid)
         # Tied output projection: [B, T, D] @ [D, V] -> [B, T, V].
         return F.linear(features, self.embedding.weight)
+
+    def _encode_images(self, imgs: Tensor) -> Tensor:
+        if self.backbone is not None:
+            with torch.no_grad():
+                return self.backbone.forward_features(imgs)
+        else:
+            return imgs
 
     def forward_with_loss(
         self,
@@ -174,7 +188,14 @@ class OcrVit(LightningModule, StateDictExcludeModulesMixin):
         logits, loss = self.forward_with_loss(
             imgs, decoder_input_ids, tgt_valid, labels, memory
         )
-        self.log(f"{step}/loss", loss, prog_bar=True, batch_size=imgs.shape[0])
+        self.log(
+            f"{step}/loss",
+            loss,
+            prog_bar=True,
+            on_step=True,
+            on_epoch=True,
+            batch_size=imgs.shape[0],
+        )
         return logits, loss, labels
 
     def _generate(self, imgs: Tensor, memory: Tensor) -> list[str]:
@@ -237,14 +258,14 @@ class OcrVit(LightningModule, StateDictExcludeModulesMixin):
     @torch.no_grad
     def validation_step(self, batch, _batch_idx):
         imgs, texts = batch
-        memory = self.backbone.forward_features(imgs)
+        memory = self._encode_images(imgs)
         logits, _, labels = self._step(batch, "val", memory)
         predictions = self._generate(imgs, memory)
 
-        self.val_perplexity.update(logits.float(), labels)  # ty: ignore[invalid-argument-type]
-        self.val_cer.update(predictions, texts)  # ty: ignore[invalid-argument-type]
-        self.val_wer.update(predictions, texts)  # ty: ignore[invalid-argument-type]
-        self.val_exact_match.update(
+        self.val_perplexity(logits.float(), labels)
+        self.val_cer(predictions, texts)
+        self.val_wer(predictions, texts)
+        self.val_exact_match(
             torch.tensor(
                 [
                     prediction == target
@@ -252,17 +273,17 @@ class OcrVit(LightningModule, StateDictExcludeModulesMixin):
                 ],
                 dtype=torch.float32,
                 device=imgs.device,
-            )  # ty: ignore[invalid-argument-type]
+            )
         )
 
-        self.log("val/perplexity", self.val_perplexity, on_step=False, on_epoch=True)
-        self.log("val/cer", self.val_cer, on_step=False, on_epoch=True)
-        self.log("val/wer", self.val_wer, on_step=False, on_epoch=True)
-        self.log("val/exact_match", self.val_exact_match, on_step=False, on_epoch=True)
+        self.log("val/perplexity", self.val_perplexity, on_step=True, on_epoch=True)
+        self.log("val/cer", self.val_cer, on_step=True, on_epoch=True)
+        self.log("val/wer", self.val_wer, on_step=True, on_epoch=True)
+        self.log("val/exact_match", self.val_exact_match, on_step=True, on_epoch=True)
 
     @override
     @torch.no_grad
     def predict_step(self, batch, _batch_idx, _dataloader_idx=0) -> list[str]:
         imgs, _texts = batch
-        memory = self.backbone.forward_features(imgs)
+        memory = self._encode_images(imgs)
         return self._generate(imgs, memory)

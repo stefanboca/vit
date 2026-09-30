@@ -33,14 +33,19 @@ trainer:
 model:
   class_path: vit.models.ocr.OcrVit
   init_args:
+    # the longest sequence in the dataset is 27 tokens
+    max_generation_length: 32
     learning_rate: 1e-4
     warmup_steps: 1000
     # About 20 epochs at 256 examples per batch; same-size bucketing adds tails.
     # Hold at min_learning_rate after this many total optimizer steps.
     total_steps: 800000
     min_learning_rate: 5e-6
+    cached_features: ${data.init_args.load_features}
 data:
   class_path: vit.models.ocr.SynthTigerDataModule
   init_args:
     data_dir: ${oc.env:HOME}/src/datasets/synthetic-ocr-1
+    features_dir: ${oc.env:HOME}/src/datasets/synthetic-ocr-1-features/vit_small_plus_patch16_dinov3
     batch_size: 256
+    load_features: true
