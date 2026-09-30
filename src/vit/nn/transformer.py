@@ -1,3 +1,5 @@
+from typing import cast
+
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
@@ -86,6 +88,30 @@ class RotaryDecoderLayer(nn.Module):
 
         return tgt + self.dropout(self.ffn(self.ffn_norm(tgt)))
 
+    def forward_step(
+        self,
+        tgt: Tensor,
+        self_kv: tuple[Tensor | None, Tensor | None],
+        cross_kv: tuple[Tensor, Tensor],
+        rope: RotaryEmbeddingValues,
+    ) -> tuple[Tensor, tuple[Tensor, Tensor]]:
+        q, k, v = self.self_qkv(self.self_norm(tgt)).chunk(3, dim=-1)
+        q, k, v = self._split_heads(q), self._split_heads(k), self._split_heads(v)
+        q = rope.apply(q)
+        k = rope.apply(k)
+        past_k, past_v = self_kv
+        if past_k is not None and past_v is not None:
+            k = torch.cat((past_k, k), dim=2)
+            v = torch.cat((past_v, v), dim=2)
+        self_attn = F.scaled_dot_product_attention(q, k, v)
+        tgt = tgt + self.dropout(self.self_out(self._merge_heads(self_attn)))
+
+        q = self._split_heads(self.cross_q(self.cross_norm(tgt)))
+        cross_attn = F.scaled_dot_product_attention(q, *cross_kv)
+        tgt = tgt + self.dropout(self.cross_out(self._merge_heads(cross_attn)))
+        tgt = tgt + self.dropout(self.ffn(self.ffn_norm(tgt)))
+        return tgt, (k, v)
+
 
 class RotaryTransformerDecoder(nn.Module):
     """Batch-first causal decoder with padding masks and shared per-pass RoPE."""
@@ -118,3 +144,26 @@ class RotaryTransformerDecoder(nn.Module):
         for layer in self.layers:
             tgt = layer(tgt, memory, self_attn_mask, rope)
         return self.norm(tgt)
+
+    def init_cache(self, memory: Tensor):
+        cache = []
+        for module in self.layers:
+            layer = cast(RotaryDecoderLayer, module)
+            cross_k, cross_v = layer.cross_kv(memory).chunk(2, dim=-1)
+            cross_k, cross_v = layer._split_heads(cross_k), layer._split_heads(cross_v)
+            cache.append((None, None, cross_k, cross_v))
+        return cache
+
+    def decode_step(self, tgt: Tensor, cache, position: int) -> tuple[Tensor, list]:
+        """Decode one token and return updated per-layer self-attention KV cache."""
+        rope = self.rope.at(position, tgt.device, tgt.dtype)
+        updated_cache = []
+        for module, (self_k, self_v, cross_k, cross_v) in zip(
+            self.layers, cache, strict=True
+        ):
+            layer = cast(RotaryDecoderLayer, module)
+            tgt, (self_k, self_v) = layer.forward_step(
+                tgt, (self_k, self_v), (cross_k, cross_v), rope
+            )
+            updated_cache.append((self_k, self_v, cross_k, cross_v))
+        return self.norm(tgt), updated_cache

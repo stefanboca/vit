@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import cast
 
 import torch
 from torch import Tensor, nn
@@ -31,8 +32,20 @@ class RotaryEmbedding(nn.Module):
     def forward(
         self, seq_len: int, device: torch.device, dtype: torch.dtype
     ) -> RotaryEmbeddingValues:
-        positions = torch.arange(seq_len, device=device, dtype=self.inv_freq.dtype)
-        angles = torch.outer(positions, self.inv_freq).repeat_interleave(2, dim=-1)
+        inv_freq = cast(Tensor, self.inv_freq)
+        positions = torch.arange(seq_len, device=device, dtype=inv_freq.dtype)
+        angles = torch.outer(positions, inv_freq).repeat_interleave(2, dim=-1)
         cos = angles.cos().to(dtype=dtype)[None, None, :, :]
         sin = angles.sin().to(dtype=dtype)[None, None, :, :]
         return RotaryEmbeddingValues(cos, sin)
+
+    def at(
+        self, position: int, device: torch.device, dtype: torch.dtype
+    ) -> RotaryEmbeddingValues:
+        inv_freq = cast(Tensor, self.inv_freq)
+        angles = inv_freq.to(device=device) * position
+        angles = angles.repeat_interleave(2, dim=-1)
+        return RotaryEmbeddingValues(
+            angles.cos().to(dtype=dtype)[None, None, None, :],
+            angles.sin().to(dtype=dtype)[None, None, None, :],
+        )

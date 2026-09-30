@@ -1,7 +1,6 @@
 from typing import cast, override
 
 import timm
-import torch
 from lightning import LightningModule
 from timm.models import Eva
 from torch import Tensor, nn

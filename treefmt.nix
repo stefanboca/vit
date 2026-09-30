@@ -9,7 +9,7 @@ in {
   settings.formatter = {
     ty = {
       command = getExe pkgs.ty;
-      options = ["check"];
+      options = ["check" "--color=always"];
       includes = ["*.py"];
     };
   };
