@@ -1,9 +1,19 @@
 {
-  inputs.nixpkgs.url = "https://channels.nixos.org/nixos-unstable/nixexprs.tar.xz";
+  inputs = {
+    nixpkgs.url = "https://channels.nixos.org/nixos-unstable/nixexprs.tar.xz";
 
-  outputs = {nixpkgs, ...}: let
+    treefmt-nix.url = "github:numtide/treefmt-nix";
+    treefmt-nix.inputs.nixpkgs.follows = "nixpkgs";
+  };
+
+  outputs = {
+    self,
+    nixpkgs,
+    treefmt-nix,
+    ...
+  }: let
     inherit (nixpkgs) lib;
-    inherit (lib.attrsets) genAttrs;
+    inherit (lib.attrsets) genAttrs mapAttrs' nameValuePair;
     inherit (lib.strings) makeLibraryPath;
 
     systems = ["x86_64-linux" "aarch64-linux"];
@@ -16,6 +26,7 @@
           cudaSupport = true;
         };
       });
+    treefmtFor = forAllSystems (system: treefmt-nix.lib.evalModule nixpkgsFor.${system} ./treefmt.nix);
   in {
     devShells = forAllSystems (system: let
       pkgs = nixpkgsFor.${system};
@@ -35,5 +46,12 @@
         };
       };
     });
+
+    formatter = forAllSystems (system: treefmtFor.${system}.config.build.wrapper);
+    checks = forAllSystems (system: let
+      devShells = mapAttrs' (n: nameValuePair "devShell-${n}") self.devShells.${system};
+      formatting = {formatting = treefmtFor.${system}.config.build.check self;};
+    in
+      devShells // formatting);
   };
 }

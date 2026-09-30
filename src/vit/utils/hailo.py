@@ -35,7 +35,7 @@ class HailoEvaAttention(EvaAttention):
             if self.q_bias is None:
                 qkv_bias = self.qkv.bias
             else:
-                qkv_bias = torch.cat((self.q_bias, self.k_bias, self.v_bias))
+                qkv_bias = torch.cat((self.q_bias, self.k_bias, self.v_bias))  # ty: ignore[invalid-argument-type]
                 if self.qkv_bias_separate and self.qkv.bias is not None:
                     # timm applies qkv.bias in self.qkv(x), then adds the
                     # separate biases; combine them before splitting instead.
@@ -53,9 +53,9 @@ class HailoEvaAttention(EvaAttention):
             k = k.reshape(B, N, self.num_heads, -1).transpose(1, 2)
             v = v.reshape(B, N, self.num_heads, -1).transpose(1, 2)
         else:
-            q = self.q_proj(x).reshape(B, N, self.num_heads, -1).transpose(1, 2)
-            k = self.k_proj(x).reshape(B, N, self.num_heads, -1).transpose(1, 2)
-            v = self.v_proj(x).reshape(B, N, self.num_heads, -1).transpose(1, 2)
+            q = self.q_proj(x).reshape(B, N, self.num_heads, -1).transpose(1, 2)  # ty: ignore[call-non-callable]
+            k = self.k_proj(x).reshape(B, N, self.num_heads, -1).transpose(1, 2)  # ty: ignore[call-non-callable]
+            v = self.v_proj(x).reshape(B, N, self.num_heads, -1).transpose(1, 2)  # ty: ignore[call-non-callable]
 
         q, k = self.q_norm(q), self.k_norm(k)
 
@@ -90,7 +90,7 @@ class HailoEvaAttention(EvaAttention):
         prefix_bias = q.new_tensor(
             tuple(
                 -log(multiplicity)
-                for multiplicity in multiplicities
+                for multiplicity in multiplicities  # ty: ignore[not-iterable]
                 for _ in range(multiplicity)
             )
         )
@@ -156,15 +156,14 @@ class HailoEva(Eva):
         row_width = self._hailo_layout_width(patch_tokens, prefix_tokens)
         copies_per_token, extra_copies = divmod(row_width, prefix_tokens)
         multiplicities = tuple(
-            copies_per_token + (index < extra_copies)
-            for index in range(prefix_tokens)
+            copies_per_token + (index < extra_copies) for index in range(prefix_tokens)
         )
         self.num_prefix_tokens = row_width
         self._hailo_prefix_multiplicities = multiplicities
         for module in self.modules():
             if isinstance(module, HailoEvaAttention):
                 module.num_prefix_tokens = row_width
-                module._hailo_prefix_multiplicities = multiplicities
+                module._hailo_prefix_multiplicities = multiplicities  # ty: ignore[invalid-assignment]
 
         x = x.transpose(1, 2).reshape(
             x.shape[0], x.shape[2], patch_tokens // row_width, row_width
@@ -203,11 +202,11 @@ class HailoEva(Eva):
                 pos_embed = None
             x = x.view(B, -1, C)
             rot_pos_embed = (
-                self.rope.get_embed(shape=(H, W)) if self.rope is not None else None
+                self.rope.get_embed(shape=(H, W)) if self.rope is not None else None  # ty: ignore[call-non-callable]
             )
         else:
             pos_embed = self.pos_embed
-            rot_pos_embed = self.rope.get_embed() if self.rope is not None else None
+            rot_pos_embed = self.rope.get_embed() if self.rope is not None else None  # ty: ignore[call-non-callable]
 
         # timm builds one `to_cat` list and performs a direct token-axis concat.
         # Keep the same order and expansion, but pass the prefix and patches to
@@ -234,16 +233,13 @@ class HailoEva(Eva):
             if pos_embed is not None:
                 # timm has one absolute position per real prefix token. Repeat
                 # those positions with the same multiplicities as the tokens.
-                real_npt = (
-                    (0 if cls_token is None else cls_token.shape[1])
-                    + (0 if reg_token is None else reg_token.shape[1])
+                real_npt = (0 if cls_token is None else cls_token.shape[1]) + (
+                    0 if reg_token is None else reg_token.shape[1]
                 )
                 if self.num_prefix_tokens != real_npt:
                     prefix_pos_embed = torch.cat(
                         tuple(
-                            pos_embed[:, index : index + 1].expand(
-                                -1, multiplicity, -1
-                            )
+                            pos_embed[:, index : index + 1].expand(-1, multiplicity, -1)
                             for index, multiplicity in enumerate(
                                 self._hailo_prefix_multiplicities
                             )
@@ -351,8 +347,7 @@ class HailoEva(Eva):
         # y[:, row_width:], but DFC receives an 80x16 spatial crop instead of
         # an unsupported 1x1280 token slice at the current 512x640 resolution.
         intermediates = [
-            y.reshape(B, patch_rows + 1, row_width, -1)[:, 1:]
-            for y in intermediates
+            y.reshape(B, patch_rows + 1, row_width, -1)[:, 1:] for y in intermediates
         ]
         if reshape:
             intermediates = [
