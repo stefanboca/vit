@@ -2,9 +2,8 @@ trainer:
   max_epochs: 20
   accelerator: gpu
   precision: bf16-mixed
-  # fast_dev_run: true
-  limit_train_batches: 0.01
-  limit_val_batches: 0.01
+  # limit_train_batches: 0.01
+  # limit_val_batches: 0.01
   logger:
     class_path: lightning.pytorch.loggers.TensorBoardLogger
     init_args:

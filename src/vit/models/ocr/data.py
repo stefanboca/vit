@@ -3,6 +3,7 @@ from typing import override
 
 from lightning import LightningDataModule
 from torchdata.stateful_dataloader import StatefulDataLoader
+from torchvision.transforms import v2
 
 from vit.data.synthtiger import SynthTiger
 from vit.utils.same_size_batch_sampler import SameSizeBatchSampler
@@ -26,6 +27,11 @@ class SynthTigerDataModule(LightningDataModule):
         self.test_fraction = test_fraction
         self.split_seed = split_seed
 
+        self.normalize = v2.Normalize(
+            mean=(0.485, 0.456, 0.406),
+            std=(0.229, 0.224, 0.225),
+        )
+
     def _split_filter(self, split: str) -> tuple[str, tuple[int, ...]]:
         score = "((idx * 2654435761 + ?) % 4294967296)"
         seed_offset = (self.split_seed * 1013904223) % 2**32
@@ -47,18 +53,21 @@ class SynthTigerDataModule(LightningDataModule):
             self.train = SynthTiger(
                 self.data_dir / "gt.db",
                 index_filter=self._split_filter("train"),
+                transform=self.normalize,
             )
 
         if stage in ("fit", "validate"):
             self.val = SynthTiger(
                 self.data_dir / "gt.db",
                 index_filter=self._split_filter("val"),
+                transform=self.normalize,
             )
 
         if stage in "test":
             self.test = SynthTiger(
                 self.data_dir / "gt.db",
                 index_filter=self._split_filter("test"),
+                transform=self.normalize,
             )
 
     @override
