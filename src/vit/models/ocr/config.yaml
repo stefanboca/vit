@@ -27,14 +27,20 @@ trainer:
         save_on_train_epoch_end: true
         enable_version_counter: false
         save_on_exception: true
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: step
 model:
   class_path: vit.models.ocr.OcrVit
+  init_args:
+    learning_rate: 1e-4
+    warmup_steps: 1000
+    # About 20 epochs at 256 examples per batch; same-size bucketing adds tails.
+    # Hold at min_learning_rate after this many total optimizer steps.
+    total_steps: 800000
+    min_learning_rate: 5e-6
 data:
   class_path: vit.models.ocr.SynthTigerDataModule
   init_args:
     data_dir: ${oc.env:HOME}/src/datasets/synthetic-ocr-1
     batch_size: 256
-optimizer:
-  class_path: torch.optim.AdamW
-  init_args:
-    lr: 1e-4

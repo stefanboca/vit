@@ -7,6 +7,8 @@ from lightning import LightningModule
 from timm.models import Eva
 from tokenizers import Tokenizer
 from torch import Tensor, nn
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR, LinearLR, SequentialLR
 from torchmetrics import MeanMetric
 from torchmetrics.text import CharErrorRate, Perplexity, WordErrorRate
 
@@ -24,11 +26,19 @@ class OcrVit(LightningModule, StateDictExcludeModulesMixin):
         max_generation_length: int = 128,
         beam_size: int = 4,
         length_penalty: float = 0.6,
+        learning_rate: float = 1e-4,
+        warmup_steps: int = 1000,
+        total_steps: int = 800_000,
+        min_learning_rate: float = 5e-6,
     ):
         super().__init__()
         self.max_generation_length = max_generation_length
         self.beam_size = beam_size
         self.length_penalty = length_penalty
+        self.learning_rate = learning_rate
+        self.warmup_steps = warmup_steps
+        self.total_steps = total_steps
+        self.min_learning_rate = min_learning_rate
 
         self.backbone = cast(
             Eva, timm.create_model("vit_small_plus_patch16_dinov3", pretrained=True)
@@ -61,6 +71,33 @@ class OcrVit(LightningModule, StateDictExcludeModulesMixin):
         self.val_exact_match = MeanMetric()
 
         self._exclude_modules_from_state_dict("backbone")
+
+    @override
+    def configure_optimizers(self):
+        optimizer = AdamW(self.parameters(), lr=self.learning_rate)
+        warmup = LinearLR(
+            optimizer,
+            start_factor=0.01,
+            total_iters=self.warmup_steps,
+        )
+        cosine = CosineAnnealingLR(
+            optimizer,
+            T_max=self.total_steps - self.warmup_steps,
+            eta_min=self.min_learning_rate,
+        )
+        floor = LambdaLR(
+            optimizer,
+            lr_lambda=lambda _: self.min_learning_rate / self.learning_rate,
+        )
+        scheduler = SequentialLR(
+            optimizer,
+            schedulers=[warmup, cosine, floor],
+            milestones=[self.warmup_steps, self.total_steps],
+        )
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
+        }
 
     @override
     def train(self, mode: bool = True):
