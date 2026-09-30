@@ -2,6 +2,7 @@ import argparse
 import os
 import sqlite3
 import sys
+from collections.abc import Iterator
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from itertools import batched
 from pathlib import Path
@@ -22,17 +23,31 @@ MAX_IN_FLIGHT = 4 * DB_BATCH_SIZE
 class SynthTiger(SizedImageDataset):
     """SynthTIGER OCR dataset backed by a SQLite ``gt.db`` index."""
 
-    def __init__(self, db_path: Path, image_root: Path | None = None, transform=None):
+    def __init__(
+        self,
+        db_path: Path,
+        image_root: Path | None = None,
+        transform=None,
+        *,
+        index_filter: tuple[str, tuple[int, ...]] = ("", ()),
+    ):
         self.db_path = Path(db_path)
         self.image_root = (
             Path(image_root) if image_root is not None else self.db_path.parent
         )
         self.transform = transform
+        self.index_filter = index_filter
+
         self._db: sqlite3.Connection | None = None
         self._db_pid: int | None = None
 
     def __len__(self) -> int:
-        (count,) = self._connection().execute("SELECT COUNT(*) FROM items").fetchone()
+        where, parameters = self.index_filter
+        (count,) = (
+            self._connection()
+            .execute(f"SELECT COUNT(*) FROM items WHERE 1 = 1 {where}", parameters)
+            .fetchone()
+        )
         return count
 
     def _connection(self) -> sqlite3.Connection:
@@ -46,6 +61,12 @@ class SynthTiger(SizedImageDataset):
             )
             self._db_pid = pid
         return self._db
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_db"] = None
+        state["_db_pid"] = None
+        return state
 
     @override
     def __getitem__(self, index: int) -> tuple[torch.Tensor, str]:
@@ -66,11 +87,15 @@ class SynthTiger(SizedImageDataset):
         return image, label
 
     @override
-    def size_counts(self):
-        yield from self._connection().execute(
+    def size_counts(self) -> Iterator[tuple[ImageSize, int]]:
+        where, parameters = self.index_filter
+        for width, height, count in self._connection().execute(
             "SELECT width, height, COUNT(*) FROM items "
-            "GROUP BY width, height ORDER BY width, height"
-        )
+            f"WHERE 1 = 1 {where} "
+            "GROUP BY width, height ORDER BY width, height",
+            parameters,
+        ):
+            yield (width, height), count
 
     @override
     def indices_for_size(
@@ -84,9 +109,11 @@ class SynthTiger(SizedImageDataset):
         # SQLite's random() uses its own RNG; generator is accepted to satisfy the
         # sampler interface but cannot seed this ordering.
         order = "random()" if shuffle else "idx"
+        where, split_parameters = self.index_filter
         for (index,) in self._connection().execute(
-            f"SELECT idx FROM items WHERE width = ? AND height = ? ORDER BY {order}",
-            size,
+            "SELECT idx FROM items WHERE width = ? AND height = ? "
+            f"{where} ORDER BY {order}",
+            (*size, *split_parameters),
         ):
             yield index - 1
 

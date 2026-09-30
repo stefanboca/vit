@@ -81,8 +81,7 @@ class OcrVit(LightningModule, StateDictExcludeModulesMixin):
         # from sequence lengths instead of comparing token IDs with pad_id.
         return decoder_input_ids, tgt_valid, labels
 
-    @override
-    def forward(
+    def _forward_inner(
         self, imgs: Tensor, decoder_input_ids: Tensor, tgt_valid: Tensor
     ) -> Tensor:
         with torch.no_grad():
@@ -93,15 +92,29 @@ class OcrVit(LightningModule, StateDictExcludeModulesMixin):
         # Tied output projection: [B, T, D] @ [D, V] -> [B, T, V].
         return F.linear(features, self.embedding.weight)
 
-    def _step(self, batch, step: str) -> Tensor:
-        imgs, texts = batch
-        decoder_input_ids, tgt_valid, labels = self._prepare_targets(texts, imgs.device)
-        logits = self.forward(imgs, decoder_input_ids, tgt_valid)
+    @override
+    # @torch.compile
+    def forward(
+        self, imgs: Tensor, decoder_input_ids: Tensor, tgt_valid: Tensor
+    ) -> Tensor:
+        return self._forward_inner(imgs, decoder_input_ids, tgt_valid)
+
+    # @torch.compile
+    def forward_with_loss(
+        self, imgs: Tensor, decoder_input_ids: Tensor, tgt_valid: Tensor, labels: Tensor
+    ) -> tuple[Tensor, Tensor]:
+        logits = self._forward_inner(imgs, decoder_input_ids, tgt_valid)
         loss = F.cross_entropy(
             logits.reshape(-1, logits.shape[-1]),
             labels.reshape(-1),
             ignore_index=-100,
         )
+        return logits, loss
+
+    def _step(self, batch, step: str) -> Tensor:
+        imgs, texts = batch
+        decoder_input_ids, tgt_valid, labels = self._prepare_targets(texts, imgs.device)
+        _, loss = self.forward_with_loss(imgs, decoder_input_ids, tgt_valid, labels)
         self.log(f"{step}/loss", loss, prog_bar=True, batch_size=imgs.shape[0])
         return loss
 
