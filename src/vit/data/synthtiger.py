@@ -161,11 +161,11 @@ def gen_db(args):
     db.execute("PRAGMA temp_store = MEMORY")
     db.execute(
         "CREATE TABLE items("
-        "   idx INTEGER PRIMARY KEY,"
-        "   path TEXT,"
-        "   label TEXT,"
-        "   width INTEGER,"
-        "   height INTEGER"
+        "idx INTEGER PRIMARY KEY,"
+        "path TEXT,"
+        "label TEXT,"
+        "width INTEGER,"
+        "height INTEGER"
         ");"
     )
 
