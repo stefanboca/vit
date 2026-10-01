@@ -234,11 +234,12 @@ class OcrVit(LightningModule, StateDictExcludeModulesMixin):
         start_tokens = torch.full(
             (imgs.shape[0],), self.pad_id, dtype=torch.long, device=imgs.device
         )
-        token_ids = BeamSearch(
+        beam_search = BeamSearch(
             beam_size=self.beam_size,
             max_length=self.max_generation_length,
             length_penalty=self.length_penalty,
-        ).search(
+        )
+        token_ids = beam_search.search(
             start_tokens,
             step,
             state,

@@ -14,7 +14,7 @@ trainer:
       init_args:
         filename: epoch={epoch}-val_loss={val/loss:.4f}
         monitor: val/loss
-        mode: max
+        mode: min
         save_last: false
         auto_insert_metric_name: false
         save_on_exception: false
