@@ -60,6 +60,7 @@ class RotaryDecoderLayer(nn.Module):
         memory: Tensor,
         self_attn_mask: Tensor,
         rope: RotaryEmbeddingValues,
+        memory_valid: Tensor | None = None,
     ) -> Tensor:
         """Process batch-first tensors: tgt [B,T,D], memory [B,S,D]."""
         q, k, v = self.self_qkv(self.self_norm(tgt)).chunk(3, dim=-1)
@@ -82,6 +83,9 @@ class RotaryDecoderLayer(nn.Module):
             q,
             k,
             v,
+            attn_mask=memory_valid[:, None, None, :]
+            if memory_valid is not None
+            else None,
             dropout_p=self.dropout_p if self.training else 0.0,
         )
         tgt = tgt + self.dropout(self.cross_out(self._merge_heads(cross_attn)))
@@ -94,6 +98,7 @@ class RotaryDecoderLayer(nn.Module):
         self_kv: tuple[Tensor | None, Tensor | None],
         cross_kv: tuple[Tensor, Tensor],
         rope: RotaryEmbeddingValues,
+        memory_valid: Tensor | None = None,
     ) -> tuple[Tensor, tuple[Tensor, Tensor]]:
         q, k, v = self.self_qkv(self.self_norm(tgt)).chunk(3, dim=-1)
         q, k, v = self._split_heads(q), self._split_heads(k), self._split_heads(v)
@@ -107,7 +112,13 @@ class RotaryDecoderLayer(nn.Module):
         tgt = tgt + self.dropout(self.self_out(self._merge_heads(self_attn)))
 
         q = self._split_heads(self.cross_q(self.cross_norm(tgt)))
-        cross_attn = F.scaled_dot_product_attention(q, *cross_kv)
+        cross_attn = F.scaled_dot_product_attention(
+            q,
+            *cross_kv,
+            attn_mask=memory_valid[:, None, None, :]
+            if memory_valid is not None
+            else None,
+        )
         tgt = tgt + self.dropout(self.cross_out(self._merge_heads(cross_attn)))
         tgt = tgt + self.dropout(self.ffn(self.ffn_norm(tgt)))
         return tgt, (k, v)
@@ -132,7 +143,13 @@ class RotaryTransformerDecoder(nn.Module):
         )
         self.norm = nn.LayerNorm(d_model)
 
-    def forward(self, tgt: Tensor, memory: Tensor, tgt_valid: Tensor) -> Tensor:
+    def forward(
+        self,
+        tgt: Tensor,
+        memory: Tensor,
+        tgt_valid: Tensor,
+        memory_valid: Tensor | None = None,
+    ) -> Tensor:
         """Return [B,T,D] from tgt [B,T,D], memory [B,S,D], valid mask [B,T]."""
         tgt_len = tgt.shape[1]
         causal = torch.ones(
@@ -142,7 +159,7 @@ class RotaryTransformerDecoder(nn.Module):
         self_attn_mask = causal[None, None, :, :] & tgt_valid[:, None, None, :]
         rope = self.rope(tgt_len, tgt.device, tgt.dtype)
         for layer in self.layers:
-            tgt = layer(tgt, memory, self_attn_mask, rope)
+            tgt = layer(tgt, memory, self_attn_mask, rope, memory_valid)
         return self.norm(tgt)
 
     def init_cache(self, memory: Tensor):
@@ -154,7 +171,13 @@ class RotaryTransformerDecoder(nn.Module):
             cache.append((None, None, cross_k, cross_v))
         return cache
 
-    def decode_step(self, tgt: Tensor, cache, position: int) -> tuple[Tensor, list]:
+    def decode_step(
+        self,
+        tgt: Tensor,
+        cache,
+        position: int,
+        memory_valid: Tensor | None = None,
+    ) -> tuple[Tensor, list]:
         """Decode one token and return updated per-layer self-attention KV cache."""
         rope = self.rope.at(position, tgt.device, tgt.dtype)
         updated_cache = []
@@ -163,7 +186,7 @@ class RotaryTransformerDecoder(nn.Module):
         ):
             layer = cast(RotaryDecoderLayer, module)
             tgt, (self_k, self_v) = layer.forward_step(
-                tgt, (self_k, self_v), (cross_k, cross_v), rope
+                tgt, (self_k, self_v), (cross_k, cross_v), rope, memory_valid
             )
             updated_cache.append((self_k, self_v, cross_k, cross_v))
         return self.norm(tgt), updated_cache

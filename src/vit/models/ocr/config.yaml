@@ -47,5 +47,5 @@ data:
   init_args:
     data_dir: ${oc.env:HOME}/src/datasets/synthetic-ocr-1
     features_dir: ${oc.env:HOME}/src/datasets/synthetic-ocr-1-features/vit_small_plus_patch16_dinov3
-    batch_size: 256
+    batch_size: 128
     load_features: true

@@ -7,6 +7,7 @@ from lightning import LightningModule
 from timm.models import Eva
 from tokenizers import Tokenizer
 from torch import Tensor, nn
+from torch.nn.utils.rnn import pad_sequence
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR, LinearLR, SequentialLR
 from torchmetrics import MeanMetric
@@ -144,35 +145,67 @@ class OcrVit(LightningModule, StateDictExcludeModulesMixin):
 
     def forward(
         self,
-        imgs: Tensor,
+        memory: Tensor,
         decoder_input_ids: Tensor,
         tgt_valid: Tensor,
-        memory: Tensor | None = None,
+        *,
+        memory_valid: Tensor | None = None,
     ) -> Tensor:
-        if memory is None:
-            memory = self._encode_images(imgs)
-
         tgt = self.embedding(decoder_input_ids)
-        features = self.decoder(tgt, memory, tgt_valid)
+        features = self.decoder(tgt, memory, tgt_valid, memory_valid)
         # Tied output projection: [B, T, D] @ [D, V] -> [B, T, V].
         return F.linear(features, self.embedding.weight)
 
-    def _encode_images(self, imgs: Tensor) -> Tensor:
-        if self.backbone is not None:
+    def _encode_images(
+        self, imgs: Tensor | list[Tensor]
+    ) -> tuple[Tensor, Tensor | None]:
+        if self.backbone is None:
+            if not isinstance(imgs, Tensor):
+                raise TypeError("Cached features must be a padded tensor")
+            return imgs, None
+
+        if isinstance(imgs, Tensor):
             with torch.no_grad():
-                return self.backbone.forward_features(imgs)
-        else:
-            return imgs
+                return self.backbone.forward_features(imgs), None
+
+        groups: dict[tuple[int, ...], list[int]] = {}
+        for index, image in enumerate(imgs):
+            groups.setdefault(tuple(image.shape), []).append(index)
+
+        features: list[Tensor | None] = [None] * len(imgs)
+        with torch.no_grad():
+            for indices in groups.values():
+                group = torch.stack([imgs[index] for index in indices])
+                encoded = self.backbone.forward_features(group)
+                for index, feature in zip(indices, encoded, strict=True):
+                    features[index] = feature
+
+        assert all(feature is not None for feature in features)
+        ordered = [cast(Tensor, feature) for feature in features]
+        lengths = torch.tensor(
+            [feature.shape[0] for feature in ordered], device=ordered[0].device
+        )
+        if bool((lengths == lengths[0]).all()):
+            return torch.stack(ordered), None
+        padded = pad_sequence(ordered, batch_first=True)
+        valid = (
+            torch.arange(padded.shape[1], device=padded.device)[None, :]
+            < lengths[:, None]
+        )
+        return padded, valid
 
     def forward_with_loss(
         self,
-        imgs: Tensor,
+        memory: Tensor,
         decoder_input_ids: Tensor,
         tgt_valid: Tensor,
         labels: Tensor,
-        memory: Tensor | None = None,
+        *,
+        memory_valid: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
-        logits = self.forward(imgs, decoder_input_ids, tgt_valid, memory)
+        logits = self.forward(
+            memory, decoder_input_ids, tgt_valid, memory_valid=memory_valid
+        )
         loss = F.cross_entropy(
             logits.reshape(-1, logits.shape[-1]),
             labels.reshape(-1),
@@ -181,12 +214,28 @@ class OcrVit(LightningModule, StateDictExcludeModulesMixin):
         return logits, loss
 
     def _step(
-        self, batch, step: str, memory: Tensor | None = None
+        self,
+        batch,
+        step: str,
+        memory: Tensor | None = None,
+        memory_valid: Tensor | None = None,
     ) -> tuple[Tensor, Tensor, Tensor]:
-        imgs, texts = batch
-        decoder_input_ids, tgt_valid, labels = self._prepare_targets(texts, imgs.device)
+        imgs, texts, *masks = batch
+        if memory is None:
+            memory, encoded_valid = self._encode_images(imgs)
+            if memory_valid is None:
+                memory_valid = encoded_valid
+        if memory_valid is None:
+            memory_valid = masks[0] if masks else None
+        decoder_input_ids, tgt_valid, labels = self._prepare_targets(
+            texts, memory.device
+        )
         logits, loss = self.forward_with_loss(
-            imgs, decoder_input_ids, tgt_valid, labels, memory
+            memory,
+            decoder_input_ids,
+            tgt_valid,
+            labels,
+            memory_valid=memory_valid,
         )
         self.log(
             f"{step}/loss",
@@ -194,15 +243,19 @@ class OcrVit(LightningModule, StateDictExcludeModulesMixin):
             prog_bar=True,
             on_step=True,
             on_epoch=True,
-            batch_size=imgs.shape[0],
+            batch_size=len(imgs),
         )
         return logits, loss, labels
 
-    def _generate(self, imgs: Tensor, memory: Tensor) -> list[str]:
-        state = (self.decoder.init_cache(memory), 0)
+    def _generate(
+        self,
+        memory: Tensor,
+        memory_valid: Tensor | None = None,
+    ) -> list[str]:
+        state = (self.decoder.init_cache(memory), 0, memory_valid)
 
         def expand_state(state, count: int):
-            cache, position = state
+            cache, position, valid = state
             expanded_cache = [
                 tuple(
                     value.repeat_interleave(count, dim=0) if value is not None else None
@@ -210,10 +263,12 @@ class OcrVit(LightningModule, StateDictExcludeModulesMixin):
                 )
                 for layer_cache in cache
             ]
-            return expanded_cache, position
+            if valid is not None:
+                valid = valid.repeat_interleave(count, dim=0)
+            return expanded_cache, position, valid
 
         def reorder_state(state, indices: Tensor):
-            cache, position = state
+            cache, position, valid = state
             reordered_cache = [
                 tuple(
                     value.index_select(0, indices) if value is not None else None
@@ -221,18 +276,20 @@ class OcrVit(LightningModule, StateDictExcludeModulesMixin):
                 )
                 for layer_cache in cache
             ]
-            return reordered_cache, position
+            if valid is not None:
+                valid = valid.index_select(0, indices)
+            return reordered_cache, position, valid
 
         def step(token_ids: Tensor, state):
-            cache, position = state
+            cache, position, valid = state
             features, cache = self.decoder.decode_step(
-                self.embedding(token_ids[:, None]), cache, position
+                self.embedding(token_ids[:, None]), cache, position, valid
             )
             logits = F.linear(features[:, 0], self.embedding.weight)
-            return logits, (cache, position + 1)
+            return logits, (cache, position + 1, valid)
 
         start_tokens = torch.full(
-            (imgs.shape[0],), self.pad_id, dtype=torch.long, device=imgs.device
+            (memory.shape[0],), self.pad_id, dtype=torch.long, device=memory.device
         )
         beam_search = BeamSearch(
             beam_size=self.beam_size,
@@ -258,10 +315,11 @@ class OcrVit(LightningModule, StateDictExcludeModulesMixin):
     @override
     @torch.no_grad
     def validation_step(self, batch, _batch_idx):
-        imgs, texts = batch
-        memory = self._encode_images(imgs)
-        logits, _, labels = self._step(batch, "val", memory)
-        predictions = self._generate(imgs, memory)
+        imgs, texts, *masks = batch
+        memory, encoded_valid = self._encode_images(imgs)
+        memory_valid = masks[0] if masks and masks[0] is not None else encoded_valid
+        logits, _, labels = self._step(batch, "val", memory, memory_valid)
+        predictions = self._generate(memory, memory_valid)
 
         self.val_perplexity(logits.float(), labels)
         self.val_cer(predictions, texts)
@@ -273,7 +331,7 @@ class OcrVit(LightningModule, StateDictExcludeModulesMixin):
                     for prediction, target in zip(predictions, texts)
                 ],
                 dtype=torch.float32,
-                device=imgs.device,
+                device=memory.device,
             )
         )
 
@@ -285,6 +343,7 @@ class OcrVit(LightningModule, StateDictExcludeModulesMixin):
     @override
     @torch.no_grad
     def predict_step(self, batch, _batch_idx, _dataloader_idx=0) -> list[str]:
-        imgs, _texts = batch
-        memory = self._encode_images(imgs)
-        return self._generate(imgs, memory)
+        imgs, _texts, *masks = batch
+        memory, encoded_valid = self._encode_images(imgs)
+        memory_valid = masks[0] if masks and masks[0] is not None else encoded_valid
+        return self._generate(memory, memory_valid)

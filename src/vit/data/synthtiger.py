@@ -26,6 +26,7 @@ from vit.utils.same_size_batch_sampler import (
 DB_BATCH_SIZE = 4096
 MAX_IN_FLIGHT = 4 * DB_BATCH_SIZE
 DEFAULT_OCR_BACKBONE = "vit_small_plus_patch16_dinov3"
+OCR_PATCH_SIZE = 16
 
 
 class SynthTiger(SizedImageDataset):
@@ -125,6 +126,24 @@ class SynthTiger(SizedImageDataset):
             parameters,
         ):
             yield (width, height), count
+
+    def indices(self, *, shuffle: bool) -> Iterator[int]:
+        where, parameters = self.index_filter
+        order = "random()" if shuffle else "idx"
+        for (index,) in self._connection().execute(
+            f"SELECT idx FROM items WHERE 1 = 1 {where} ORDER BY {order}",
+            parameters,
+        ):
+            yield index - 1
+
+    def indices_with_patch_counts(self, *, shuffle: bool) -> Iterator[tuple[int, int]]:
+        where, parameters = self.index_filter
+        order = "random()" if shuffle else "idx"
+        for index, width, height in self._connection().execute(
+            f"SELECT idx, width, height FROM items WHERE 1 = 1 {where} ORDER BY {order}",
+            parameters,
+        ):
+            yield index - 1, (width // OCR_PATCH_SIZE) * (height // OCR_PATCH_SIZE)
 
     @override
     def indices_for_size(
