@@ -1,0 +1,40 @@
+trainer:
+  max_epochs: 20
+  accelerator: gpu
+  precision: bf16-mixed
+  # limit_train_batches: 0.01
+  # limit_val_batches: 0.01
+  logger:
+    class_path: lightning.pytorch.loggers.TensorBoardLogger
+    init_args:
+      save_dir: lightning_logs
+      name: ocr
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        filename: epoch={epoch}-val_loss={val/loss:.4f}
+        monitor: val/loss
+        mode: min
+        save_last: false
+        auto_insert_metric_name: false
+        save_on_exception: false
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        filename: last
+        save_top_k: 1
+        save_last: false
+        every_n_epochs: 1
+        save_on_train_epoch_end: true
+        enable_version_counter: false
+        save_on_exception: true
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: step
+model:
+  class_path: vit.models.seg.SegVit
+  init_args:
+    max_objects: 12
+data:
+  class_path: vit.models.seg.RleDataModule
+  init_args:
+    batch_size: 8

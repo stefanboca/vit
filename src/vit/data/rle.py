@@ -25,7 +25,9 @@ class Rle(Dataset):
         with open(annotation_file, "r") as f:
             annotation = json.load(f)
         image = v2.functional.to_dtype(
-            decode_image(self.image_dir / annotation["image"]), scale=True
+            decode_image(self.image_dir / annotation["image"]),
+            dtype=torch.float32,
+            scale=True,
         )
         _, H, W = image.shape
         masks = []
