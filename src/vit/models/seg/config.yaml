@@ -2,13 +2,14 @@ trainer:
   max_epochs: 20
   accelerator: gpu
   precision: bf16-mixed
+  log_every_n_steps: 25
   # limit_train_batches: 0.01
   # limit_val_batches: 0.01
   logger:
     class_path: lightning.pytorch.loggers.TensorBoardLogger
     init_args:
       save_dir: lightning_logs
-      name: ocr
+      name: seg
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
@@ -37,4 +38,8 @@ model:
 data:
   class_path: vit.models.seg.RleDataModule
   init_args:
-    batch_size: 8
+    batch_size: 32
+optimizer:
+  class_path: torch.optim.AdamW
+  init_args:
+    lr: 1e-4

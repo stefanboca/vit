@@ -3,10 +3,10 @@ from pathlib import Path
 from typing import override
 
 import torch
+from PIL import Image
 from torch import Tensor
 from torch.utils.data import Dataset
 from torchvision import tv_tensors
-from torchvision.io import decode_image
 from torchvision.transforms import v2
 
 
@@ -24,11 +24,13 @@ class Rle(Dataset):
         annotation_file = self.annotation_files[index]
         with open(annotation_file, "r") as f:
             annotation = json.load(f)
-        image = v2.functional.to_dtype(
-            decode_image(self.image_dir / annotation["image"]),
-            dtype=torch.float32,
-            scale=True,
-        )
+        # Pillow suppresses libjpeg's nonfatal corrupt-JPEG warnings.
+        with Image.open(self.image_dir / annotation["image"]) as source:
+            image = v2.functional.to_dtype(
+                v2.functional.to_image(source.convert("RGB")),
+                dtype=torch.float32,
+                scale=True,
+            )
         _, H, W = image.shape
         masks = []
         for object in annotation["objects"]:
