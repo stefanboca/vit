@@ -3,10 +3,10 @@ from typing import override
 
 import torch
 from lightning import LightningDataModule
+from PIL import Image
 from torch import Tensor
-from torch.utils.data import ConcatDataset, DataLoader, Subset
+from torch.utils.data import ConcatDataset, DataLoader, Dataset, Subset
 from torchdata.stateful_dataloader import StatefulDataLoader
-from torchvision.datasets import ImageFolder
 from torchvision.transforms import v2
 
 from vit.data import Rle
@@ -121,32 +121,36 @@ class RleDataModule(LightningDataModule):
         )
 
 
-class ImageFolderWithNames(ImageFolder):
-    def __getitem__(self, index) -> tuple[Tensor, str]:
-        image, _ = super().__getitem__(index)
-        return image, Path(self.samples[index][0]).name
-
-
-class ImageFolderDataModule(LightningDataModule):
-    def __init__(self, root: Path, batch_size: int = 8, num_workers: int = 16):
-        self.root = root
-        self.batch_size = batch_size
-        self.num_workers = num_workers
-
-        self.normalize = v2.Normalize(
-            mean=(0.485, 0.456, 0.406),
-            std=(0.229, 0.224, 0.225),
+class ImageFolderWithNames(Dataset):
+    def __init__(self, root: Path, transform=None):
+        self.files = sorted(
+            path
+            for path in root.iterdir()
+            if path.is_file()
+            and path.suffix.lower()
+            in {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
         )
+        if not self.files:
+            raise FileNotFoundError(f"No images found in {root}")
+        self.transform = transform
+
+    def __len__(self) -> int:
+        return len(self.files)
 
     @override
-    def setup(self, stage):
-        if stage == "predict":
-            self.predict = ImageFolderWithNames(self.root, transform=self.normalize)
+    def __getitem__(self, index: int) -> tuple[Tensor, str]:
+        path = self.files[index]
+        with Image.open(path) as source:
+            image = v2.functional.to_dtype(
+                v2.functional.to_image(source.convert("RGB")),
+                dtype=torch.float32,
+                scale=True,
+            )
+        if self.transform is not None:
+            image = self.transform(image)
+        return image, path.name
 
-    @override
-    def predict_dataloader(self) -> DataLoader:
-        return DataLoader(
-            self.predict,
-            batch_size=self.batch_size,
-            num_workers=self.num_workers,
-        )
+
+def collate_named_images(batch: list[tuple[Tensor, str]]) -> tuple[Tensor, list[str]]:
+    images, names = zip(*batch, strict=True)
+    return torch.stack(images), list(names)

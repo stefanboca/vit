@@ -10,7 +10,7 @@ from torchvision.transforms import v2
 from tqdm import tqdm
 
 from vit.models.seg import SegVit
-from vit.models.seg.data import ImageFolderWithNames
+from vit.models.seg.data import ImageFolderWithNames, collate_named_images
 
 
 def encode_rle(mask: Tensor) -> list[int]:
@@ -36,18 +36,16 @@ def predict(args: Namespace):
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         pin_memory=True,
+        collate_fn=collate_named_images,
     )
 
-    for batch in tqdm(dataloader):
-        images: Tensor = batch[0]
-        names: str = batch[1]
-        _, _, H, W = images.shape
-        images = images.to(device, non_blocking=True)
+    for images, names in tqdm(dataloader):
+        height, width = images.shape[-2:]
+        with torch.no_grad():
+            predictions = model.forward(images.to(device, non_blocking=True))
 
-        with torch.inference_mode():
-            maskss = model.forward(images)
-
-        for name, masks in zip(names, maskss):
+        for name, masks in zip(names, predictions, strict=True):
+            assert all(mask.shape == (height, width) for mask in masks)
             path = (out_dir / name).with_suffix(".json")
             with open(path, "w") as f:
                 json.dump(
@@ -55,7 +53,11 @@ def predict(args: Namespace):
                         "image": name,
                         "prompt": "",
                         "objects": [
-                            {"mask_rle": encode_rle(mask), "height": H, "weight": W}
+                            {
+                                "mask_rle": encode_rle(mask),
+                                "height": height,
+                                "width": width,
+                            }
                             for mask in masks
                         ],
                     },
