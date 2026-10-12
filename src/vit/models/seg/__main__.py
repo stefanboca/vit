@@ -6,7 +6,8 @@ from pathlib import Path
 import torch
 from torch import Tensor
 from torch.utils.data import DataLoader
-from torchvision.transforms import v2
+from torchvision import tv_tensors
+from torchvision.transforms import InterpolationMode, v2
 from tqdm import tqdm
 
 from vit.models.seg import SegVit
@@ -28,8 +29,13 @@ def predict(args: Namespace):
     ).to(device)
     model.eval()
 
-    normalize = v2.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
-    dataset = ImageFolderWithNames(args.image_dir, transform=normalize)
+    transform = v2.Compose(
+        [
+            v2.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            v2.ToPureTensor(),
+        ]
+    )
+    dataset = ImageFolderWithNames(args.image_dir, transform=transform)
 
     dataloader = DataLoader(
         dataset,
@@ -42,7 +48,23 @@ def predict(args: Namespace):
     for images, names in tqdm(dataloader):
         height, width = images.shape[-2:]
         with torch.no_grad():
-            predictions = model.forward(images.to(device, non_blocking=True))
+            model_images = v2.functional.resize(
+                images.to(device, non_blocking=True),
+                [512, 640],
+                interpolation=InterpolationMode.BILINEAR,
+                antialias=True,
+            )
+            predictions = [
+                [
+                    v2.functional.resize(
+                        tv_tensors.Mask(mask),
+                        [height, width],
+                        interpolation=InterpolationMode.NEAREST_EXACT,
+                    )
+                    for mask in masks
+                ]
+                for masks in model.forward(model_images)
+            ]
 
         for name, masks in zip(names, predictions, strict=True):
             assert all(mask.shape == (height, width) for mask in masks)
@@ -66,6 +88,8 @@ def predict(args: Namespace):
 
 
 def main():
+    torch.set_float32_matmul_precision("high")
+
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(required=True)
 

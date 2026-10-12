@@ -74,7 +74,7 @@ class SegVit(
         self.backbone.eval()
         return self
 
-    @torch.compile
+    # @torch.compile
     def forward_logits(self, input: Tensor) -> Tensor:
         with torch.no_grad():
             x = self.backbone.forward_intermediates(
