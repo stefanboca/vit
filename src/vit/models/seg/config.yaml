@@ -38,6 +38,7 @@ model:
 data:
   class_path: vit.models.seg.RleDataModule
   init_args:
+    size: [512, 640]
     batch_size: 32
 optimizer:
   class_path: torch.optim.AdamW

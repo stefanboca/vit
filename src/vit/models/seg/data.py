@@ -20,7 +20,7 @@ class RleDataModule(LightningDataModule):
     def __init__(
         self,
         data_dirs: list[tuple[Path, Path]],
-        size: tuple[int, int] = (640, 512),
+        size: tuple[int, int] = (512, 640),
         batch_size: int = 8,
         num_workers: int = 16,
         val_fraction: float = 0.05,
