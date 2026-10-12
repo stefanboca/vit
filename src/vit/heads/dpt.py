@@ -237,6 +237,13 @@ class FeatureFusionBlock(nn.Module):
     def forward(self, x: Tensor, x2: Tensor | None = None) -> Tensor:
         x = self.res_conv_1(x)
         if x2 is not None:
+            if x.shape[-2:] != x2.shape[-2:]:
+                x = F.interpolate(
+                    x,
+                    size=x2.shape[-2:],
+                    mode="bilinear",
+                    align_corners=self.align_corners,
+                )
             x += self.res_conv_2(x2)
 
         x = F.interpolate(
