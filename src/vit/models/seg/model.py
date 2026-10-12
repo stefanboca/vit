@@ -115,13 +115,27 @@ class SegVit(
         images, masks = batch
         logits = self.forward_logits(images)
         matches = self.matcher(logits, masks)
-        loss = mask_loss(logits, masks, matches)
+        loss, bce, dice = mask_loss(logits, masks, matches)
         self.log(
             f"{stage}/loss",
             loss,
             on_step=True,
             on_epoch=True,
             prog_bar=True,
+            batch_size=images.shape[0],
+        )
+        self.log(
+            f"{stage}/bce_loss",
+            bce,
+            on_step=True,
+            on_epoch=True,
+            batch_size=images.shape[0],
+        )
+        self.log(
+            f"{stage}/dice_loss",
+            dice,
+            on_step=True,
+            on_epoch=True,
             batch_size=images.shape[0],
         )
 
@@ -227,7 +241,7 @@ def mask_loss(
     logits: Tensor,
     targets: list[Tensor],
     matches: list[tuple[Tensor, Tensor]],
-) -> Tensor:
+) -> tuple[Tensor, Tensor, Tensor]:
     aligned, matched = align_masks(logits, targets, matches)
 
     bce = F.binary_cross_entropy_with_logits(logits, aligned)
@@ -235,9 +249,11 @@ def mask_loss(
     if matched.any():
         prediction = logits[matched].sigmoid().flatten(1)
         truth = aligned[matched].flatten(1)
-        dice = 1 - (2 * (prediction * truth).sum(1) + 1) / (
+        dice_per_mask = 1 - (2 * (prediction * truth).sum(1) + 1) / (
             prediction.sum(1) + truth.sum(1) + 1
         )
-        return bce + dice.mean()
+        dice = dice_per_mask.mean()
+    else:
+        dice = logits.sum() * 0
 
-    return bce
+    return bce + dice, bce, dice
