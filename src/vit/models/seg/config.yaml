@@ -1,5 +1,5 @@
 trainer:
-  max_epochs: 20
+  max_epochs: 40
   accelerator: gpu
   precision: bf16-mixed
   log_every_n_steps: 25

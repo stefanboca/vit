@@ -1,4 +1,5 @@
 from colorsys import hsv_to_rgb
+from pathlib import Path
 from typing import cast, override
 
 import timm
@@ -27,7 +28,9 @@ class SegVit(
     TensorBoardImageLoggingMixin,
     StateDictExcludeModulesMixin,
 ):
-    def __init__(self, max_objects: int, log_n_images: int = 4):
+    def __init__(
+        self, max_objects: int, log_n_images: int = 4, ckpt: Path | None = None
+    ):
         super().__init__()
         self._init_image_logging(log_n_images, None)
 
@@ -61,6 +64,9 @@ class SegVit(
         self.test_metrics = make_metrics()
 
         self._exclude_modules_from_state_dict("backbone")
+        if ckpt is not None:
+            checkpoint = torch.load(ckpt, map_location="cpu", weights_only=True)
+            self.load_state_dict(checkpoint["state_dict"], strict=True)
 
     @override
     def train(self, mode: bool = True):
@@ -89,11 +95,13 @@ class SegVit(
     def training_step(self, batch: tuple[Tensor, list[Tensor]], _batch_idx) -> Tensor:
         return self._step("train", batch, _batch_idx, self.train_metrics)
 
+    @torch.no_grad
     @override
     def validation_step(self, batch: tuple[Tensor, list[Tensor]], _batch_idx) -> Tensor:
         return self._step("val", batch, _batch_idx, self.val_metrics)
 
     @override
+    @torch.no_grad
     def test_step(self, batch: tuple[Tensor, list[Tensor]], _batch_idx) -> Tensor:
         return self._step("test", batch, _batch_idx, self.test_metrics)
 
