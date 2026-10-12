@@ -4,8 +4,9 @@ from typing import override
 import torch
 from lightning import LightningDataModule
 from torch import Tensor
-from torch.utils.data import ConcatDataset, Subset
+from torch.utils.data import ConcatDataset, DataLoader, Subset
 from torchdata.stateful_dataloader import StatefulDataLoader
+from torchvision.datasets import ImageFolder
 from torchvision.transforms import v2
 
 from vit.data import Rle
@@ -111,10 +112,41 @@ class RleDataModule(LightningDataModule):
         )
 
     @override
-    def test_dataloader(self) -> StatefulDataLoader:
-        return StatefulDataLoader(
+    def test_dataloader(self) -> DataLoader:
+        return DataLoader(
             self.test,
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             collate_fn=collate_masks,
+        )
+
+
+class ImageFolderWithNames(ImageFolder):
+    def __getitem__(self, index) -> tuple[Tensor, str]:
+        image, _ = super().__getitem__(index)
+        return image, Path(self.samples[index][0]).name
+
+
+class ImageFolderDataModule(LightningDataModule):
+    def __init__(self, root: Path, batch_size: int = 8, num_workers: int = 16):
+        self.root = root
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+
+        self.normalize = v2.Normalize(
+            mean=(0.485, 0.456, 0.406),
+            std=(0.229, 0.224, 0.225),
+        )
+
+    @override
+    def setup(self, stage):
+        if stage == "predict":
+            self.predict = ImageFolderWithNames(self.root, transform=self.normalize)
+
+    @override
+    def predict_dataloader(self) -> DataLoader:
+        return DataLoader(
+            self.predict,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
         )

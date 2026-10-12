@@ -17,3 +17,5 @@ wheels/
 .venv
 
 *.onnx
+
+/output

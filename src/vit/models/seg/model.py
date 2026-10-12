@@ -105,6 +105,16 @@ class SegVit(
     def test_step(self, batch: tuple[Tensor, list[Tensor]], _batch_idx) -> Tensor:
         return self._step("test", batch, _batch_idx, self.test_metrics)
 
+    @override
+    def forward(self, images: Tensor) -> list[list[Tensor]]:
+        logits = self.forward_logits(images)
+        masks = logits > 0
+        nonempty = masks.flatten(2).any(dim=2)
+        return [
+            list(image_masks[keep])
+            for image_masks, keep in zip(masks, nonempty, strict=True)
+        ]
+
     def _step(
         self,
         stage: str,

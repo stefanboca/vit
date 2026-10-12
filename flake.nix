@@ -35,9 +35,11 @@
         packages = with pkgs; [gcc uv];
         buildInputs = with pkgs; [
           cudaPackages_13.cudatoolkit
-          libx11
           libGL
+          libx11
           openssl
+          vulkan-loader
+          wayland
         ];
         env = {
           LD_LIBRARY_PATH = "/run/opengl-driver/lib:${makeLibraryPath buildInputs}";
