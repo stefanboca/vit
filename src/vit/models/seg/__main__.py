@@ -1,15 +1,20 @@
 import argparse
 import json
+import random
 from argparse import Namespace
 from pathlib import Path
 
+import numpy as np
+import pycocotools.mask
 import torch
+from PIL import Image
 from torch import Tensor
 from torch.utils.data import DataLoader
 from torchvision import tv_tensors
 from torchvision.transforms import InterpolationMode, v2
 from tqdm import tqdm
 
+from vit.data.rle import decode_rle
 from vit.models.seg import SegVit
 from vit.models.seg.data import ImageFolderWithNames, collate_named_images
 
@@ -87,6 +92,84 @@ def predict(args: Namespace):
                 )
 
 
+def convert_to_coco(args: Namespace):
+    input_dirs: list[tuple[Path, Path]] = args.input_dirs
+    out_dir: Path = args.out_dir
+
+    categories = [{"id": 1, "name": "tire"}]
+
+    annotation_files = []
+    for image_dir, annotation_dir in input_dirs:
+        annotation_files.extend(
+            (annotation_file, image_dir)
+            for annotation_file in annotation_dir.glob("**/*.json")
+        )
+    annotation_files.sort()
+
+    random.seed(42)
+    random.shuffle(annotation_files)
+    train_val_split_idx = int(len(annotation_files) * 0.93)
+    val_test_split_idx = int(len(annotation_files) * 0.98)
+    train = annotation_files[:train_val_split_idx]
+    val = annotation_files[train_val_split_idx:val_test_split_idx]
+    test = annotation_files[val_test_split_idx:]
+    for split, annotations in tqdm(
+        (("train", train), ("val", val), ("test", test)), desc="Split"
+    ):
+        split_dir = out_dir / split
+        split_dir.mkdir(parents=True, exist_ok=True)
+        dataset = {
+            "info": {},
+            "licenses": [],
+            "images": [],
+            "annotations": [],
+            "categories": categories,
+        }
+        annotation_id = 1
+        for image_id, (annotation_file, image_dir) in enumerate(
+            tqdm(annotations, desc=f"Annotations ({split})"), start=1
+        ):
+            with open(annotation_file, "r") as f:
+                annotation = json.load(f)
+            image_path = image_dir / annotation["image"]
+            image_name: str = f"{image_id}_{annotation['image']}"
+            (split_dir / image_name).hardlink_to(image_path)
+            with Image.open(image_path) as image:
+                width, height = image.size
+            dataset["images"].append(
+                {
+                    "id": image_id,
+                    "file_name": image_name,
+                    "height": height,
+                    "width": width,
+                }
+            )
+            for object in annotation["objects"]:
+                assert (object["height"], object["width"]) == (height, width)
+                mask = decode_rle(object["mask_rle"], height, width)
+
+                rle = pycocotools.mask.encode(np.asfortranarray(mask, dtype=np.uint8))
+                area = int(pycocotools.mask.area(rle))
+                if area == 0:
+                    raise ValueError("instance mask must contain foreground pixels")
+                bbox = pycocotools.mask.toBbox(rle).tolist()
+                rle["counts"] = rle["counts"].decode("ascii")
+                dataset["annotations"].append(
+                    {
+                        "id": annotation_id,
+                        "image_id": image_id,
+                        "category_id": 1,
+                        "segmentation": rle,
+                        "area": area,
+                        "bbox": bbox,
+                        "iscrowd": 0,
+                    }
+                )
+                annotation_id += 1
+        with (split_dir / "_annotations.coco.json").open("w") as f:
+            json.dump(dataset, f)
+
+
 def main():
     torch.set_float32_matmul_precision("high")
 
@@ -105,6 +188,18 @@ def main():
         default="cuda" if torch.cuda.is_available() else "cpu",
     )
     predict_parser.set_defaults(func=predict)
+
+    convert_to_coco_parser = subparsers.add_parser("convert-to-coco")
+    convert_to_coco_parser.add_argument(
+        "--input-dirs",
+        nargs=2,
+        action="append",
+        type=Path,
+        metavar=("IMAGE_DIR", "ANNOTATION_DIR"),
+        required=True,
+    )
+    convert_to_coco_parser.add_argument("--out-dir", type=Path)
+    convert_to_coco_parser.set_defaults(func=convert_to_coco)
 
     args = parser.parse_args()
     args.func(args)
