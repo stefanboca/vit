@@ -8,6 +8,7 @@ import numpy as np
 import pycocotools.mask
 import torch
 from PIL import Image
+from rfdetr import RFDETRSeg2XLarge
 from torch import Tensor
 from torch.utils.data import DataLoader
 from torchvision import tv_tensors
@@ -108,13 +109,13 @@ def convert_to_coco(args: Namespace):
 
     random.seed(42)
     random.shuffle(annotation_files)
-    train_val_split_idx = int(len(annotation_files) * 0.93)
-    val_test_split_idx = int(len(annotation_files) * 0.98)
-    train = annotation_files[:train_val_split_idx]
-    val = annotation_files[train_val_split_idx:val_test_split_idx]
-    test = annotation_files[val_test_split_idx:]
+    train_valid_split_idx = int(len(annotation_files) * 0.93)
+    valid_test_split_idx = int(len(annotation_files) * 0.98)
+    train = annotation_files[:train_valid_split_idx]
+    valid = annotation_files[train_valid_split_idx:valid_test_split_idx]
+    test = annotation_files[valid_test_split_idx:]
     for split, annotations in tqdm(
-        (("train", train), ("val", val), ("test", test)), desc="Split"
+        (("train", train), ("valid", valid), ("test", test)), desc="Split"
     ):
         split_dir = out_dir / split
         split_dir.mkdir(parents=True, exist_ok=True)
@@ -170,6 +171,31 @@ def convert_to_coco(args: Namespace):
             json.dump(dataset, f)
 
 
+def rfdetr_train(args: Namespace):
+    model = RFDETRSeg2XLarge(
+        resolution=504,
+    )
+    model.train(
+        dataset_dir=args.dataset_dir,
+        output_dir=args.out_dir,
+        resume=args.resume,
+        class_names=["tire"],
+        device=torch.device(args.device),
+        epochs=20,
+        batch_size="auto",
+        lr=1e-4,
+        lr_encoder=1e-4,
+        num_workers=8,
+        square_resize_div_64=False,
+        multi_scale=False,
+        expanded_scales=False,
+        progress_bar="rich",
+        tensorboard=True,
+        train_log_on_step=True,
+        compute_train_metrics=True,
+    )
+
+
 def main():
     torch.set_float32_matmul_precision("high")
 
@@ -184,8 +210,7 @@ def main():
     predict_parser.add_argument("--num-workers", type=int, default=16)
     predict_parser.add_argument("--max-objects", type=int, default=12)
     predict_parser.add_argument(
-        "--device",
-        default="cuda" if torch.cuda.is_available() else "cpu",
+        "--device", default="cuda" if torch.cuda.is_available() else "cpu"
     )
     predict_parser.set_defaults(func=predict)
 
@@ -200,6 +225,15 @@ def main():
     )
     convert_to_coco_parser.add_argument("--out-dir", type=Path)
     convert_to_coco_parser.set_defaults(func=convert_to_coco)
+
+    rfdetr_train_parser = subparsers.add_parser("rfdetr-train")
+    rfdetr_train_parser.add_argument("--dataset-dir", type=Path, required=True)
+    rfdetr_train_parser.add_argument("--out-dir", type=Path, required=True)
+    rfdetr_train_parser.add_argument(
+        "--device", default="cuda" if torch.cuda.is_available() else "cpu"
+    )
+    rfdetr_train_parser.add_argument("--resume", type=Path)
+    rfdetr_train_parser.set_defaults(func=rfdetr_train)
 
     args = parser.parse_args()
     args.func(args)
