@@ -1,14 +1,20 @@
 import argparse
+import colorsys
 import json
 import random
 from argparse import Namespace
 from pathlib import Path
 
 import numpy as np
+import onnx
 import pycocotools.mask
+import supervision as sv
 import torch
+from onnx.external_data_helper import convert_model_from_external_data
+from onnxruntime.transformers import float16
+from onnxruntime.transformers.onnx_model import OnnxModel
 from PIL import Image
-from rfdetr import RFDETRSeg2XLarge
+from rfdetr import RFDETR, RFDETRSeg2XLarge
 from torch import Tensor
 from torch.utils.data import DataLoader
 from torchvision import tv_tensors
@@ -171,6 +177,49 @@ def convert_to_coco(args: Namespace):
             json.dump(dataset, f)
 
 
+def rfdetr_predict(args: Namespace):
+    Image.init()
+    image_paths = sorted(
+        path
+        for path in args.image_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in Image.registered_extensions()
+    )
+    if not image_paths:
+        raise ValueError(f"No images found in {args.image_dir}")
+    if args.image_dir.resolve() == args.out_dir.resolve():
+        raise ValueError("--out-dir must differ from --image-dir")
+
+    model = RFDETR.from_checkpoint(args.ckpt, device=args.device)
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+
+    for image_path in tqdm(image_paths, desc="RF-DETR predictions"):
+        with Image.open(image_path) as image:
+            image = image.convert("RGB")
+        detections = model.predict(image, threshold=args.threshold)
+        # Spread successive instance colors around the hue wheel without repeating
+        # the default palette when an image contains many instances.
+        colors = []
+        for index in range(max(1, len(detections))):
+            rgb = colorsys.hsv_to_rgb((index * 0.61803398875) % 1, 0.75, 1)
+            colors.append(sv.Color(*(round(channel * 255) for channel in rgb)))
+        palette = sv.ColorPalette(colors=colors)
+        annotator_kwargs = {"color": palette, "color_lookup": sv.ColorLookup.INDEX}
+        labels = [
+            f"{name} {confidence:.2f}"
+            for name, confidence in zip(
+                detections.data["class_name"], detections.confidence, strict=True
+            )
+        ]
+        # Supervision's NumPy scenes use BGR; RF-DETR receives the RGB PIL image.
+        scene = np.array(image)[:, :, ::-1].copy()
+        scene = sv.MaskAnnotator(**annotator_kwargs).annotate(scene, detections)
+        scene = sv.BoxAnnotator(**annotator_kwargs).annotate(scene, detections)
+        scene = sv.LabelAnnotator(**annotator_kwargs).annotate(
+            scene, detections, labels=labels
+        )
+        Image.fromarray(scene[:, :, ::-1]).save(args.out_dir / image_path.name)
+
+
 def rfdetr_train(args: Namespace):
     model = RFDETRSeg2XLarge(
         resolution=504,
@@ -194,6 +243,41 @@ def rfdetr_train(args: Namespace):
         train_log_on_step=True,
         compute_train_metrics=True,
     )
+
+
+def rfdetr_export(args: Namespace):
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    model = RFDETR.from_checkpoint(args.ckpt)
+
+    fp32_path = Path(
+        model.export(
+            format="onnx",
+            output_dir=str(out_dir),
+            opset_version=19,
+            batch_size=1,
+            dynamic_batch=False,
+            verbose=False,
+        )
+    )
+
+    graph = onnx.load(str(fp32_path), load_external_data=True)
+    convert_model_from_external_data(graph)
+
+    graph = float16.convert_float_to_float16(
+        graph,
+        keep_io_types=True,
+    )
+    OnnxModel(graph).topological_sort()
+
+    fp16_path = fp32_path.with_stem(fp32_path.stem + "_fp16")
+    onnx.save_model(
+        graph,
+        str(fp16_path),
+        save_as_external_data=False,
+    )
+    onnx.checker.check_model(str(fp16_path), full_check=True)
 
 
 def main():
@@ -226,6 +310,16 @@ def main():
     convert_to_coco_parser.add_argument("--out-dir", type=Path)
     convert_to_coco_parser.set_defaults(func=convert_to_coco)
 
+    rfdetr_predict_parser = subparsers.add_parser("rfdetr-predict")
+    rfdetr_predict_parser.add_argument("--image-dir", type=Path, required=True)
+    rfdetr_predict_parser.add_argument("--out-dir", type=Path, required=True)
+    rfdetr_predict_parser.add_argument("--ckpt", type=Path, required=True)
+    rfdetr_predict_parser.add_argument("--threshold", type=float, default=0.5)
+    rfdetr_predict_parser.add_argument(
+        "--device", default="cuda" if torch.cuda.is_available() else "cpu"
+    )
+    rfdetr_predict_parser.set_defaults(func=rfdetr_predict)
+
     rfdetr_train_parser = subparsers.add_parser("rfdetr-train")
     rfdetr_train_parser.add_argument("--dataset-dir", type=Path, required=True)
     rfdetr_train_parser.add_argument("--out-dir", type=Path, required=True)
@@ -234,6 +328,11 @@ def main():
     )
     rfdetr_train_parser.add_argument("--resume", type=Path)
     rfdetr_train_parser.set_defaults(func=rfdetr_train)
+
+    rfdetr_export_parser = subparsers.add_parser("rfdetr-export")
+    rfdetr_export_parser.add_argument("--ckpt", type=Path, required=True)
+    rfdetr_export_parser.add_argument("--out-dir", type=Path, required=True)
+    rfdetr_export_parser.set_defaults(func=rfdetr_export)
 
     args = parser.parse_args()
     args.func(args)
