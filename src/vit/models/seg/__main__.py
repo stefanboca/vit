@@ -16,6 +16,7 @@ from onnxruntime.transformers.onnx_model import OnnxModel
 from PIL import Image
 from rfdetr import RFDETR, RFDETRSeg2XLarge
 from torch import Tensor
+from torch.onnx import _constants as onnx_constants
 from torch.utils.data import DataLoader
 from torchvision import tv_tensors
 from torchvision.transforms import InterpolationMode, v2
@@ -255,7 +256,7 @@ def rfdetr_export(args: Namespace):
         model.export(
             format="onnx",
             output_dir=str(out_dir),
-            opset_version=19,
+            opset_version=args.opset_version,
             batch_size=1,
             dynamic_batch=False,
             verbose=False,
@@ -332,6 +333,16 @@ def main():
     rfdetr_export_parser = subparsers.add_parser("rfdetr-export")
     rfdetr_export_parser.add_argument("--ckpt", type=Path, required=True)
     rfdetr_export_parser.add_argument("--out-dir", type=Path, required=True)
+    rfdetr_export_parser.add_argument(
+        "--opset-version",
+        type=int,
+        default=19,
+        choices=range(
+            onnx_constants.ONNX_MIN_OPSET,
+            onnx_constants.ONNX_TORCHSCRIPT_EXPORTER_MAX_OPSET + 1,
+        ),
+        help="ONNX opset for RF-DETR's legacy TorchScript exporter (default: %(default)s)",
+    )
     rfdetr_export_parser.set_defaults(func=rfdetr_export)
 
     args = parser.parse_args()
