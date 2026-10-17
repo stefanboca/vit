@@ -10,13 +10,10 @@ import onnx
 import pycocotools.mask
 import supervision as sv
 import torch
-from onnx.external_data_helper import convert_model_from_external_data
-from onnxruntime.transformers import float16
-from onnxruntime.transformers.onnx_model import OnnxModel
 from PIL import Image
 from rfdetr import RFDETR, RFDETRSeg2XLarge
+from rfdetr.export.prepare import prepare_export_graph
 from torch import Tensor
-from torch.onnx import _constants as onnx_constants
 from torch.utils.data import DataLoader
 from torchvision import tv_tensors
 from torchvision.transforms import InterpolationMode, v2
@@ -232,11 +229,12 @@ def rfdetr_train(args: Namespace):
         class_names=["tire"],
         device=torch.device(args.device),
         epochs=20,
-        batch_size="auto",
+        batch_size=args.batch_size,
+        grad_accum_steps=args.grad_accum_steps,
         lr=1e-4,
         lr_encoder=1e-4,
-        num_workers=8,
-        square_resize_div_64=False,
+        num_workers=args.num_workers,
+        square_resize_div_64=True,
         multi_scale=False,
         expanded_scales=False,
         progress_bar="rich",
@@ -250,35 +248,42 @@ def rfdetr_export(args: Namespace):
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    model = RFDETR.from_checkpoint(args.ckpt)
+    model = RFDETR.from_checkpoint(args.ckpt, device=args.device)
+    export_model = model.model.model
+    assert export_model is not None
+    graph = prepare_export_graph(
+        export_model,
+        model.model_config,
+        shape=(model.model.resolution, model.model.resolution),
+        device=args.device,
+        infer_dir=str(args.sample_image) if args.sample_image is not None else None,
+        batch_size=1,
+        dynamic_batch=False,
+    )
+    # RF-DETR's public ONNX exporter forces the legacy TorchScript path. Reuse
+    # its preparation, including frozen position embeddings, then trace directly.
+    export_model.export()
+    dtype = torch.float16 if args.precision == "fp16" else torch.float32
+    export_model.to(device=args.device, dtype=dtype)
+    input_sample = graph.input_tensors.to(device=args.device, dtype=dtype)
+    output_path = out_dir / f"{model.size}_{args.precision}.onnx"
 
-    fp32_path = Path(
-        model.export(
-            format="onnx",
-            output_dir=str(out_dir),
+    with torch.no_grad():
+        torch.onnx.export(
+            export_model,
+            (input_sample,),
+            output_path,
+            input_names=list(graph.input_names),
+            output_names=list(graph.output_names),
             opset_version=args.opset_version,
-            batch_size=1,
-            dynamic_batch=False,
-            verbose=False,
+            dynamo=True,
+            external_data=False,
+            verify=args.verify,
+            report=True,
+            artifacts_dir=str(out_dir),
         )
-    )
-
-    graph = onnx.load(str(fp32_path), load_external_data=True)
-    convert_model_from_external_data(graph)
-
-    graph = float16.convert_float_to_float16(
-        graph,
-        keep_io_types=True,
-    )
-    OnnxModel(graph).topological_sort()
-
-    fp16_path = fp32_path.with_stem(fp32_path.stem + "_fp16")
-    onnx.save_model(
-        graph,
-        str(fp16_path),
-        save_as_external_data=False,
-    )
-    onnx.checker.check_model(str(fp16_path), full_check=True)
+    onnx.checker.check_model(str(output_path), full_check=True)
+    print(f"Exported {args.precision} ONNX model to {output_path}")
 
 
 def main():
@@ -325,6 +330,24 @@ def main():
     rfdetr_train_parser.add_argument("--dataset-dir", type=Path, required=True)
     rfdetr_train_parser.add_argument("--out-dir", type=Path, required=True)
     rfdetr_train_parser.add_argument(
+        "--batch-size",
+        type=lambda value: value if value == "auto" else int(value),
+        default="auto",
+        help="Images per device per step, or 'auto' to probe GPU capacity (default: auto)",
+    )
+    rfdetr_train_parser.add_argument(
+        "--grad-accum-steps",
+        type=int,
+        default=1,
+        help="Steps per optimizer update for an explicit batch size (default: 1; auto batch derives this)",
+    )
+    rfdetr_train_parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=8,
+        help="Data loader workers; use 0 to load in the training process (default: 8)",
+    )
+    rfdetr_train_parser.add_argument(
         "--device", default="cuda" if torch.cuda.is_available() else "cpu"
     )
     rfdetr_train_parser.add_argument("--resume", type=Path)
@@ -336,12 +359,28 @@ def main():
     rfdetr_export_parser.add_argument(
         "--opset-version",
         type=int,
-        default=19,
-        choices=range(
-            onnx_constants.ONNX_MIN_OPSET,
-            onnx_constants.ONNX_TORCHSCRIPT_EXPORTER_MAX_OPSET + 1,
-        ),
-        help="ONNX opset for RF-DETR's legacy TorchScript exporter (default: %(default)s)",
+        default=24,
+        help="ONNX opset for the modern exporter (default: %(default)s)",
+    )
+    rfdetr_export_parser.add_argument(
+        "--precision",
+        choices=("fp32", "fp16"),
+        default="fp16",
+        help="Model and input precision (default: %(default)s)",
+    )
+    rfdetr_export_parser.add_argument(
+        "--device", default="cuda" if torch.cuda.is_available() else "cpu"
+    )
+    rfdetr_export_parser.add_argument(
+        "--sample-image",
+        type=Path,
+        help="Representative image for export verification (default: synthetic image)",
+    )
+    rfdetr_export_parser.add_argument(
+        "--verify",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Compare ONNX Runtime outputs with PyTorch (default: enabled)",
     )
     rfdetr_export_parser.set_defaults(func=rfdetr_export)
 
