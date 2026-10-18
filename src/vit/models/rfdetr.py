@@ -212,9 +212,8 @@ def train(args: Namespace):
         output_dir=args.out_dir,
         resume=args.resume,
         device=torch.device(args.device),
-        epochs=20,
+        epochs=args.epochs,
         batch_size=args.batch_size,
-        grad_accum_steps=args.grad_accum_steps,
         lr=1e-4,
         lr_encoder=1e-4,
         num_workers=args.num_workers,
@@ -315,24 +314,13 @@ def main():
     train_parser = subparsers.add_parser("train")
     train_parser.add_argument("--dataset-dir", type=Path, required=True)
     train_parser.add_argument("--out-dir", type=Path, required=True)
+    train_parser.add_argument("--epochs", type=int, default=20)
     train_parser.add_argument(
         "--batch-size",
         type=lambda value: value if value == "auto" else int(value),
         default="auto",
-        help="Images per device per step, or 'auto' to probe GPU capacity (default: auto)",
     )
-    train_parser.add_argument(
-        "--grad-accum-steps",
-        type=int,
-        default=1,
-        help="Steps per optimizer update for an explicit batch size (default: 1; auto batch derives this)",
-    )
-    train_parser.add_argument(
-        "--num-workers",
-        type=int,
-        default=8,
-        help="Data loader workers; use 0 to load in the training process (default: 8)",
-    )
+    train_parser.add_argument("--num-workers", type=int, default=8)
     train_parser.add_argument(
         "--device", default="cuda" if torch.cuda.is_available() else "cpu"
     )
@@ -342,31 +330,14 @@ def main():
     export_parser = subparsers.add_parser("export")
     export_parser.add_argument("--ckpt", type=Path, required=True)
     export_parser.add_argument("--out-dir", type=Path, required=True)
-    export_parser.add_argument(
-        "--opset-version",
-        type=int,
-        default=24,
-        help="ONNX opset for the modern exporter (default: %(default)s)",
-    )
-    export_parser.add_argument(
-        "--precision",
-        choices=("fp32", "fp16"),
-        default="fp16",
-        help="Model and input precision (default: %(default)s)",
-    )
+    export_parser.add_argument("--opset-version", type=int, default=24)
+    export_parser.add_argument("--precision", choices=("fp32", "fp16"), default="fp16")
     export_parser.add_argument(
         "--device", default="cuda" if torch.cuda.is_available() else "cpu"
     )
+    export_parser.add_argument("--sample-image", type=Path)
     export_parser.add_argument(
-        "--sample-image",
-        type=Path,
-        help="Representative image for export verification (default: synthetic image)",
-    )
-    export_parser.add_argument(
-        "--verify",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Compare ONNX Runtime outputs with PyTorch (default: enabled)",
+        "--verify", action=argparse.BooleanOptionalAction, default=True
     )
     export_parser.set_defaults(func=export)
 
