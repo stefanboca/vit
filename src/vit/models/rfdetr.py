@@ -1,6 +1,7 @@
 import argparse
 import colorsys
 import json
+import math
 import random
 from argparse import Namespace
 from pathlib import Path
@@ -94,6 +95,65 @@ def convert_to_coco(args: Namespace):
                 annotation_id += 1
         with (split_dir / "_annotations.coco.json").open("w") as f:
             json.dump(dataset, f)
+
+
+def split_coco(args: Namespace):
+    ratios: tuple[float, float, float] = args.ratios
+    assert all(
+        math.isfinite(ratio) and ratio >= 0 for ratio in ratios
+    ) and math.isclose(sum(ratios), 1.0)
+
+    with args.annotations.open() as f:
+        dataset = json.load(f)
+    images = list(dataset["images"])
+    image_ids = {image["id"] for image in images}
+    assert len(image_ids) == len(images)
+    annotations_by_image = {image_id: [] for image_id in image_ids}
+    for annotation in dataset["annotations"]:
+        assert annotation["image_id"] in image_ids
+        annotations_by_image[annotation["image_id"]].append(annotation)
+
+    image_dir = args.image_dir or args.annotations.parent
+    image_paths = {}
+    file_names = set()
+    for image in images:
+        file_name = Path(image["file_name"])
+        file_names.add(file_name)
+        image_path = (image_dir / file_name).resolve()
+        assert image_path.is_file()
+        image_paths[image["id"]] = image_path
+
+    random.Random(args.seed).shuffle(images)
+    train_end = int(len(images) * ratios[0])
+    valid_end = int(len(images) * (ratios[0] + ratios[1]))
+    splits = (
+        ("train", images[:train_end]),
+        ("valid", images[train_end:valid_end]),
+        ("test", images[valid_end:]),
+    )
+    args.out_dir.mkdir(parents=True)
+    for split, split_images in splits:
+        split_dir = args.out_dir / split
+        split_dir.mkdir()
+        split_annotations = [
+            annotation
+            for image in split_images
+            for annotation in annotations_by_image[image["id"]]
+        ]
+        for image in split_images:
+            destination = split_dir / image["file_name"]
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.symlink_to(image_paths[image["id"]])
+        split_dataset = {
+            **dataset,
+            "images": split_images,
+            "annotations": split_annotations,
+        }
+        with (split_dir / "_annotations.coco.json").open("w") as f:
+            json.dump(split_dataset, f)
+        print(
+            f"{split}: {len(split_images)} images, {len(split_annotations)} annotations"
+        )
 
 
 def predict(args: Namespace):
@@ -227,6 +287,20 @@ def main():
     )
     convert_to_coco_parser.add_argument("--out-dir", type=Path)
     convert_to_coco_parser.set_defaults(func=convert_to_coco)
+
+    split_coco_parser = subparsers.add_parser("split-coco")
+    split_coco_parser.add_argument("--annotations", type=Path, required=True)
+    split_coco_parser.add_argument("--image-dir", type=Path)
+    split_coco_parser.add_argument("--out-dir", type=Path, required=True)
+    split_coco_parser.add_argument(
+        "--ratios",
+        type=float,
+        nargs=3,
+        default=(0.93, 0.05, 0.02),
+        metavar=("TRAIN", "VALID", "TEST"),
+    )
+    split_coco_parser.add_argument("--seed", type=int, default=42)
+    split_coco_parser.set_defaults(func=split_coco)
 
     predict_parser = subparsers.add_parser("rfdetr-predict")
     predict_parser.add_argument("--image-dir", type=Path, required=True)
