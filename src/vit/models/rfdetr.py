@@ -296,13 +296,13 @@ def main():
         "--ratios",
         type=float,
         nargs=3,
-        default=(0.93, 0.05, 0.02),
+        default=(0.94, 0.05, 0.01),
         metavar=("TRAIN", "VALID", "TEST"),
     )
     split_coco_parser.add_argument("--seed", type=int, default=42)
     split_coco_parser.set_defaults(func=split_coco)
 
-    predict_parser = subparsers.add_parser("rfdetr-predict")
+    predict_parser = subparsers.add_parser("predict")
     predict_parser.add_argument("--image-dir", type=Path, required=True)
     predict_parser.add_argument("--out-dir", type=Path, required=True)
     predict_parser.add_argument("--ckpt", type=Path, required=True)
@@ -312,7 +312,7 @@ def main():
     )
     predict_parser.set_defaults(func=predict)
 
-    train_parser = subparsers.add_parser("rfdetr-train")
+    train_parser = subparsers.add_parser("train")
     train_parser.add_argument("--dataset-dir", type=Path, required=True)
     train_parser.add_argument("--out-dir", type=Path, required=True)
     train_parser.add_argument(
@@ -339,7 +339,7 @@ def main():
     train_parser.add_argument("--resume", type=Path)
     train_parser.set_defaults(func=train)
 
-    export_parser = subparsers.add_parser("rfdetr-export")
+    export_parser = subparsers.add_parser("export")
     export_parser.add_argument("--ckpt", type=Path, required=True)
     export_parser.add_argument("--out-dir", type=Path, required=True)
     export_parser.add_argument(
