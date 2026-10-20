@@ -348,4 +348,8 @@ def main():
 if __name__ == "__main__":
     main()
 
-# jq --argjson ids '[8,9]' '.annotations |= map(select(.category_id as $id | $ids | index($id) | not)) | .categories |= map(select(.id as $id | $ids | index($id) | not)) ' ./LeftRearTireDL.json > ./LeftRearTireDL.filtered.json
+# jq --argjson ids '[8,9]' --argjson n 1015 '
+#   .annotations |= map(select((.category_id as $id | $ids | index($id) | not) and (.image_id <= $n)))
+#   | .categories |= map(select(.id as $id | $ids | index($id) | not))
+#   | .images |= map(select(.id <= $n))
+# ' ./LeftRearTireDL.json > ./LeftRearTireDL.filtered.json
