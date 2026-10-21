@@ -1,0 +1,14 @@
+out_dir = "/path/to/output/combined"
+ratios = [0.94, 0.05, 0.01]  # train, valid, test
+seed = 42
+
+exclude_category_ids = [8, 9]
+
+[[sources]]
+annotations = "/path/to/LeftRearTireDL.json"
+image_dir = "/path/to/LeftRearTireDL"
+max_image_id = 1015
+
+[[sources]]
+annotations = "/path/to/RightRearTireDL.json"
+image_dir = "/path/to/RightRearTireDL"

@@ -3,6 +3,7 @@ import colorsys
 import json
 import math
 import random
+import tomllib
 from argparse import Namespace
 from pathlib import Path
 
@@ -98,32 +99,88 @@ def convert_to_coco(args: Namespace):
 
 
 def split_coco(args: Namespace):
-    ratios: tuple[float, float, float] = args.ratios
-    assert all(
-        math.isfinite(ratio) and ratio >= 0 for ratio in ratios
-    ) and math.isclose(sum(ratios), 1.0)
+    with args.config.open("rb") as f:
+        config = tomllib.load(f)
+    out_dir = Path(config["out_dir"])
+    ratios = config.get("ratios", (0.94, 0.05, 0.01))
+    assert (
+        len(ratios) == 3
+        and all(math.isfinite(ratio) and ratio >= 0 for ratio in ratios)
+        and math.isclose(sum(ratios), 1.0)
+    )
 
-    with args.annotations.open() as f:
-        dataset = json.load(f)
-    images = list(dataset["images"])
-    image_ids = {image["id"] for image in images}
-    assert len(image_ids) == len(images)
-    annotations_by_image = {image_id: [] for image_id in image_ids}
-    for annotation in dataset["annotations"]:
-        assert annotation["image_id"] in image_ids
-        annotations_by_image[annotation["image_id"]].append(annotation)
-
-    image_dir = args.image_dir or args.annotations.parent
+    inputs = config["sources"]
+    assert inputs
+    excluded_category_ids = set(config.get("exclude_category_ids", []))
+    combining = len(inputs) > 1
+    dataset = None
+    images = []
+    annotations_by_image = {}
+    annotation_id = 1
     image_paths = {}
-    file_names = set()
-    for image in images:
-        file_name = Path(image["file_name"])
-        file_names.add(file_name)
-        image_path = (image_dir / file_name).resolve()
-        assert image_path.is_file()
-        image_paths[image["id"]] = image_path
+    for input_index, source_config in enumerate(inputs, start=1):
+        annotation_path = Path(source_config["annotations"])
+        image_dir = Path(source_config["image_dir"])
+        max_image_id = source_config.get("max_image_id")
+        assert max_image_id is None or (
+            isinstance(max_image_id, int) and max_image_id >= 0
+        )
+        with annotation_path.open() as f:
+            source = json.load(f)
+        source["categories"] = [
+            category
+            for category in source["categories"]
+            if category["id"] not in excluded_category_ids
+        ]
+        if dataset is None:
+            dataset = {
+                key: value
+                for key, value in source.items()
+                if key not in ("images", "annotations", "licenses")
+            }
+        assert source["categories"] == dataset["categories"]
+        image_id_map = {}
+        source_image_ids = {image["id"] for image in source["images"]}
+        assert len(source_image_ids) == len(source["images"])
+        for image in source["images"]:
+            if max_image_id is not None and image["id"] > max_image_id:
+                continue
+            file_name = Path(image["file_name"])
+            image_path = (image_dir / file_name).resolve()
+            assert image_path.is_file()
+            merged_image = dict(image)
+            merged_image.pop("license", None)
+            if combining:
+                file_name = Path(str(input_index)) / file_name
+                merged_image.update(
+                    id=len(images) + 1,
+                    file_name=str(file_name),
+                )
+            image_id_map[image["id"]] = merged_image["id"]
+            images.append(merged_image)
+            image_paths[merged_image["id"]] = image_path
+            annotations_by_image[merged_image["id"]] = []
+        for annotation in source["annotations"]:
+            assert annotation["image_id"] in source_image_ids
+            if (
+                annotation["image_id"] not in image_id_map
+                or annotation["category_id"] in excluded_category_ids
+            ):
+                continue
+            merged_annotation = dict(annotation)
+            if combining:
+                merged_annotation.update(
+                    id=annotation_id,
+                    image_id=image_id_map[annotation["image_id"]],
+                )
+            annotations_by_image[merged_annotation["image_id"]].append(
+                merged_annotation
+            )
+            annotation_id += 1
+    assert dataset is not None
+    assert len(image_paths) == len(images)
 
-    random.Random(args.seed).shuffle(images)
+    random.Random(config.get("seed", 42)).shuffle(images)
     train_end = int(len(images) * ratios[0])
     valid_end = int(len(images) * (ratios[0] + ratios[1]))
     splits = (
@@ -131,9 +188,9 @@ def split_coco(args: Namespace):
         ("valid", images[train_end:valid_end]),
         ("test", images[valid_end:]),
     )
-    args.out_dir.mkdir(parents=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
     for split, split_images in splits:
-        split_dir = args.out_dir / split
+        split_dir = out_dir / split
         split_dir.mkdir()
         split_annotations = [
             annotation
@@ -288,17 +345,12 @@ def main():
     convert_to_coco_parser.set_defaults(func=convert_to_coco)
 
     split_coco_parser = subparsers.add_parser("split-coco")
-    split_coco_parser.add_argument("--annotations", type=Path, required=True)
-    split_coco_parser.add_argument("--image-dir", type=Path)
-    split_coco_parser.add_argument("--out-dir", type=Path, required=True)
     split_coco_parser.add_argument(
-        "--ratios",
-        type=float,
-        nargs=3,
-        default=(0.94, 0.05, 0.01),
-        metavar=("TRAIN", "VALID", "TEST"),
+        "--config",
+        type=Path,
+        required=True,
+        help="TOML config",
     )
-    split_coco_parser.add_argument("--seed", type=int, default=42)
     split_coco_parser.set_defaults(func=split_coco)
 
     predict_parser = subparsers.add_parser("predict")
@@ -347,9 +399,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# jq --argjson ids '[8,9]' --argjson n 1015 '
-#   .annotations |= map(select((.category_id as $id | $ids | index($id) | not) and (.image_id <= $n)))
-#   | .categories |= map(select(.id as $id | $ids | index($id) | not))
-#   | .images |= map(select(.id <= $n))
-# ' ./LeftRearTireDL.json > ./LeftRearTireDL.filtered.json
