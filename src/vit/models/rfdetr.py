@@ -13,7 +13,7 @@ import pycocotools.mask
 import supervision as sv
 import torch
 from PIL import Image
-from rfdetr import RFDETR, RFDETRSeg2XLarge
+from rfdetr import RFDETRSeg2XLarge
 from rfdetr.export.prepare import prepare_export_graph
 from tqdm import tqdm
 
@@ -225,7 +225,11 @@ def predict(args: Namespace):
     if args.image_dir.resolve() == args.out_dir.resolve():
         raise ValueError("--out-dir must differ from --image-dir")
 
-    model = RFDETR.from_checkpoint(args.ckpt, device=args.device)
+    model = RFDETRSeg2XLarge(
+        pretrain_weights=str(args.ckpt.resolve()),
+        resolution=504,
+        device=args.device,
+    )
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     for image_path in tqdm(image_paths, desc="RF-DETR predictions"):
@@ -288,7 +292,11 @@ def export(args: Namespace):
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    model = RFDETR.from_checkpoint(args.ckpt, device=args.device)
+    model = RFDETRSeg2XLarge(
+        pretrain_weights=str(args.ckpt.resolve()),
+        resolution=504,
+        device=args.device,
+    )
     export_model = model.model.model
     assert export_model is not None
     graph = prepare_export_graph(
