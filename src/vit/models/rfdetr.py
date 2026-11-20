@@ -4,6 +4,7 @@ import json
 import math
 import random
 import tomllib
+import warnings
 from argparse import Namespace
 from pathlib import Path
 
@@ -317,7 +318,7 @@ def export(args: Namespace):
     output_path = out_dir / f"{model.size}_{args.precision}.onnx"
 
     with torch.no_grad():
-        torch.onnx.export(
+        program = torch.onnx.export(
             export_model,
             (input_sample,),
             output_path,
@@ -330,8 +331,18 @@ def export(args: Namespace):
             report=True,
             artifacts_dir=str(out_dir),
         )
+    assert program is not None
+    actual_opset = program.model.opset_imports.get("")
+    if actual_opset != args.opset_version:
+        warnings.warn(
+            f"Requested ONNX opset {args.opset_version}, but the exporter produced "
+            f"opset {actual_opset}.",
+            stacklevel=2,
+        )
     onnx.checker.check_model(str(output_path), full_check=True)
-    print(f"Exported {args.precision} ONNX model to {output_path}")
+    print(
+        f"Exported {args.precision} ONNX model (opset {actual_opset}) to {output_path}"
+    )
 
 
 def main():
